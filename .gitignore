@@ -1,0 +1,68 @@
+# ---- Third-party toolchain (huge, fetchable) ----
+# vendor/ holds the Lean 4.15.0 wasm32 release tarball (~200 MB), its
+# ~800 MB extracted tree, and a full lean4 source clone (~700 MB with its
+# own .git). Keep these out of the repo; reproducibility comes from
+# pinning the version in scripts/README, not from committing binaries.
+vendor/
+
+# ---- Node dependencies & lockfiles ----
+# node_modules is always regenerable from the lockfile.
+# Keep package-lock.json / package.json tracked for reproducibility.
+node_modules/
+.npm/
+.pnp.*
+.yarn/
+
+# ---- Build output ----
+dist/
+build/
+out/
+.vite/
+.turbo/
+.cache/
+*.tsbuildinfo
+
+# ---- Test output / scratch dirs ----
+# Transient per-run workspaces created by harness + Playwright.
+.test-scratch/
+.compile-scratch/
+packages/tests/test-results/
+packages/tests/playwright-report/
+packages/tests/blob-report/
+playwright/.cache/
+
+# ---- Lean build artifacts (if any slip into preflight/) ----
+# .olean/.ilean/.c outputs are per-toolchain; regenerate from .lean sources.
+# Track the .lean fixtures themselves.
+**/build/
+**/.lake/
+*.olean
+*.ilean
+*.hash
+# Keep generated .c out of git — they're huge and toolchain-specific.
+preflight/**/*.c
+
+# ---- Logs, env, secrets ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.*
+!.env.example
+
+# ---- Editor / OS cruft ----
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# ---- Claude / local agent state ----
+# Project-level CLAUDE.md is worth tracking if you add one; per-user
+# local settings are not.
+.claude/settings.local.json

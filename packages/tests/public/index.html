@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>lean-in-wasm</title>
+  <style>
+    body { font: 14px/1.4 -apple-system, system-ui, sans-serif; margin: 1.5rem; max-width: 80ch; }
+    pre { background: #f4f4f4; padding: .75rem; white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow: auto; font-size: 12px; }
+    .state { display: inline-block; padding: 2px 8px; border-radius: 3px; background: #eee; font-family: monospace; }
+    .state.aborted, .state.scriptError { background: #fdd; }
+    .state.running { background: #dfd; }
+    .buttons button { margin-right: 4px; padding: 6px 12px; font: inherit; cursor: pointer; }
+    .note { background: #fff3cd; padding: .5rem .75rem; border-left: 3px solid #ffc107; margin: 1rem 0; font-size: 13px; }
+    code { background: #f4f4f4; padding: 1px 4px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>lean-in-wasm (debug harness)</h1>
+  <p><strong><a href="/">← back to the Lean IDE</a></strong> (this page is the lower-level WASM harness for experimenting; the real app is at <code>/</code>)</p>
+  <p>State: <span id="state" class="state">booting</span> &nbsp; — reload with a different URL query to change what's run.</p>
+
+  <div class="note">
+    <strong>What works:</strong> metadata commands like <code>--version</code>, <code>--help</code>, <code>--print-libdir</code>.
+    The Emscripten runtime boots, SharedArrayBuffer + pthread workers spin up, and
+    86 MiB of Init oleans can be seeded into MEMFS in ~1.5s.
+    <br><br>
+    <strong>What does NOT work:</strong> compiling a <code>.lean</code> file hangs.
+    Lean starts elaboration, then the browser context dies silently. This is
+    an architectural limit of the v4.15.0 CLI WASM binary; shims get past the
+    Node-only assertion but can't fix elaboration-path incompatibilities. A
+    real in-browser Lean compile needs upstream work (a browser-oriented
+    entry point, or a thread-model fix).
+  </div>
+
+  <div class="buttons">
+    <button onclick="location='/?args=--version'">--version</button>
+    <button onclick="location='/?args=--help'">--help</button>
+    <button onclick="location='/?args=--print-libdir'">--print-libdir</button>
+    <button onclick="location='/?args=--print-prefix'">--print-prefix</button>
+    <button onclick="location='/?args=--version&seed=init'">--version + seed 86 MB</button>
+    <button onclick="location='/?file=trivial.lean&seed=init&trace=1'">⚠ try compile (hangs)</button>
+  </div>
+
+  <pre id="out"></pre>
+  <script src="./harness.js"></script>
+</body>
+</html>

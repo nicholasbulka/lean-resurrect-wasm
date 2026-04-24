@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lean IDE</title>
+  <style>
+    :root { --accent: #2d7dd2; --border: #d0d7de; --bg-pane: #f6f8fa; }
+    html, body { height: 100%; margin: 0; font: 14px/1.4 -apple-system, system-ui, sans-serif; }
+    .app { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+    header { padding: .6rem 1rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: .75rem; }
+    header h1 { font-size: 15px; font-weight: 600; margin: 0; }
+    header .hint { color: #666; font-size: 12px; margin-left: auto; }
+    .panes { display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+    .pane { display: flex; flex-direction: column; min-width: 0; }
+    .pane + .pane { border-left: 1px solid var(--border); }
+    .pane-header { padding: .4rem .75rem; background: var(--bg-pane); border-bottom: 1px solid var(--border); font-size: 12px; display: flex; align-items: center; gap: .5rem; }
+    .pane-header .status { color: #666; }
+    .pane-header .status.ok { color: #0a0; }
+    .pane-header .status.fail { color: #c00; }
+    .pane-header .status.running { color: var(--accent); }
+    #editor { flex: 1; min-height: 0; }
+    #output { flex: 1; padding: .75rem 1rem; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #222; background: #fff; }
+    #output .err { color: #c00; }
+    button { padding: 6px 14px; font: inherit; cursor: pointer; border: 1px solid var(--border); background: #fff; border-radius: 4px; }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button[disabled] { opacity: .5; cursor: progress; }
+    a { color: var(--accent); }
+    kbd { font: 11px/1 ui-monospace, Menlo, monospace; background: #eee; padding: 1px 5px; border-radius: 3px; border: 1px solid #ccc; }
+  </style>
+  <link rel="stylesheet" data-name="vs/editor/editor.main" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/editor/editor.main.css">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Lean IDE</h1>
+      <button id="run" class="primary" onclick="runCompile()">Compile <kbd>⌘↵</kbd></button>
+      <button onclick="loadSample()">Load sample</button>
+      <span class="hint">Compile goes through <code>/api/compile</code>, which spawns the same Lean WASM bundle inside Node. No native Lean install needed. ~60–120 s cold.</span>
+    </header>
+    <div class="panes">
+      <div class="pane">
+        <div class="pane-header">Input <span style="margin-left:auto" id="edit-stat"></span></div>
+        <div id="editor"></div>
+      </div>
+      <div class="pane">
+        <div class="pane-header">Output <span class="status" id="out-status">idle</span></div>
+        <div id="output">(run a compile to see output here)</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SAMPLE = `import Std
+
+def greet (name : String) : String := "hello " ++ name
+
+#eval greet "world"
+
+def sumTo (n : Nat) : Nat :=
+  (List.range n).foldl (· + ·) 0
+
+#eval sumTo 100
+`;
+
+    const defaultSource = localStorage.getItem('lean-ide.source') || SAMPLE;
+
+    const loaderCfg = { paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs' } };
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js';
+    script.onload = () => {
+      require.config(loaderCfg);
+      require(['vs/editor/editor.main'], () => {
+        window.editor = monaco.editor.create(document.getElementById('editor'), {
+          value: defaultSource,
+          language: 'plaintext', // Lean syntax is not bundled with Monaco by default
+          fontSize: 13,
+          minimap: { enabled: false },
+          wordWrap: 'on',
+          automaticLayout: true,
+          scrollBeyondLastLine: false,
+        });
+        window.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runCompile);
+        window.editor.onDidChangeModelContent(() => {
+          const src = window.editor.getValue();
+          localStorage.setItem('lean-ide.source', src);
+          document.getElementById('edit-stat').textContent = src.length + ' chars';
+        });
+        document.getElementById('edit-stat').textContent = defaultSource.length + ' chars';
+      });
+    };
+    document.head.appendChild(script);
+
+    function loadSample() {
+      if (window.editor) window.editor.setValue(SAMPLE);
+    }
+
+    async function runCompile() {
+      if (!window.editor) return;
+      const runBtn = document.getElementById('run');
+      const out = document.getElementById('output');
+      const status = document.getElementById('out-status');
+      runBtn.disabled = true;
+      status.textContent = 'compiling…';
+      status.className = 'status running';
+      out.textContent = '';
+      const started = performance.now();
+      try {
+        const r = await fetch('/api/compile', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ source: window.editor.getValue() }),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const { stdout, stderr, exitCode, ms } = await r.json();
+        const dur = Math.round(performance.now() - started);
+        status.textContent = `exit ${exitCode} — ${ms}ms compile, ${dur}ms round-trip`;
+        status.className = exitCode === 0 ? 'status ok' : 'status fail';
+        const pieces = [];
+        if (stdout) pieces.push(stdout);
+        if (stderr) pieces.push(`<span class="err">${escapeHtml(stderr)}</span>`);
+        out.innerHTML = pieces.length ? pieces.join('\n') : '(no output)';
+      } catch (e) {
+        status.textContent = 'error';
+        status.className = 'status fail';
+        out.innerHTML = `<span class="err">${escapeHtml(String(e.message || e))}</span>`;
+      } finally {
+        runBtn.disabled = false;
+      }
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+  </script>
+</body>
+</html>
