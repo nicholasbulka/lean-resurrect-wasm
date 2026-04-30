@@ -15,9 +15,14 @@ export function RightPane() {
   if (!proof) return <div className="pane"><div className="pane-body" /></div>;
 
   const statusClass = compile.status === 'ok' ? 'ok' : compile.status === 'error' ? 'fail' : compile.status === 'running' ? 'running' : '';
+  const progressText = compile.progress
+    ? compile.progress.total
+      ? `${compile.progress.message ?? compile.progress.phase} ${compile.progress.current ?? 0}/${compile.progress.total}`
+      : compile.progress.message ?? compile.progress.phase
+    : null;
   const statusText =
     compile.status === 'idle' ? 'idle' :
-    compile.status === 'running' ? `compiling… ${Math.round(compile.elapsedMs / 1000)}s` :
+    compile.status === 'running' ? (progressText ? `${progressText} · ${Math.round(compile.elapsedMs / 1000)}s` : `compiling… ${Math.round(compile.elapsedMs / 1000)}s`) :
     compile.status === 'ok' ? `ok (${compile.result?.ms ?? 0}ms, ${compile.result?.diagnostics.length ?? 0} diag)` :
     compile.error ? `error: ${compile.error}` :
     compile.result ? `exit ${compile.result.exitCode} (${compile.result?.diagnostics.length ?? 0} diag)` : 'error';

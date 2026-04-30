@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../store';
 import { addProof, deleteProof, renameProof, selectProof } from '../slices/proofsSlice';
-import { setView } from '../slices/uiSlice';
+import { setView, setCompileMode, type CompileMode } from '../slices/uiSlice';
 
 export function ProofMenu() {
   const dispatch = useAppDispatch();
@@ -85,6 +85,28 @@ export function ProofMenu() {
         </button>
       )}
       <div className="spacer" />
+      <CompileModeToggle />
     </nav>
+  );
+}
+
+function CompileModeToggle() {
+  const dispatch = useAppDispatch();
+  const mode = useAppSelector((s) => s.ui.compileMode);
+  return (
+    <label className="compile-mode" title="Where compile runs">
+      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>compile:</span>
+      <select
+        value={mode}
+        onChange={(e) => dispatch(setCompileMode(e.target.value as CompileMode))}
+        style={{
+          padding: '2px 6px', font: 'inherit', border: '1px solid var(--border)',
+          borderRadius: 3, background: 'white',
+        }}
+      >
+        <option value="server">server (Node WASM)</option>
+        <option value="browser">browser (in-page WASM)</option>
+      </select>
+    </label>
   );
 }

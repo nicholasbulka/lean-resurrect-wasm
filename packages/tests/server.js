@@ -138,6 +138,7 @@ async function handleCompile(req, res) {
   );
   let stdout = '';
   let stderr = '';
+  let clientAborted = false;
   proc.stdout.on('data', (d) => { stdout += d.toString(); });
   proc.stderr.on('data', (d) => {
     const s = d.toString();
@@ -149,11 +150,25 @@ async function handleCompile(req, res) {
   });
   const TIMEOUT_MS = 4 * 60_000;
   const killTimer = setTimeout(() => { proc.kill('SIGKILL'); }, TIMEOUT_MS);
+  // If the client hangs up (Fetch AbortController / navigation away), kill
+  // the subprocess so it isn't orphaned chewing CPU for nothing.
+  const onReqClose = () => {
+    if (!res.writableEnded) {
+      clientAborted = true;
+      proc.kill('SIGKILL');
+    }
+  };
+  req.on('close', onReqClose);
   const exitCode = await new Promise((resolve) => {
     proc.on('close', (code) => { clearTimeout(killTimer); resolve(code ?? -1); });
     proc.on('error', () => { clearTimeout(killTimer); resolve(-1); });
   });
+  req.off('close', onReqClose);
   try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch (_) {}
+  if (clientAborted) {
+    // Response was already abandoned by the client; don't try to write.
+    return;
+  }
 
   // Parse --json output. Lean emits one JSON record per message on stdout.
   // Non-JSON lines (e.g. from #eval that wasn't adapted to JSON) pass through.
@@ -226,6 +241,18 @@ const srv = http.createServer((req, res) => {
     }
   } else {
     const rel = url.pathname.replace(/^\/+/, '');
+    // Top-level files copied from packages/ide/public (Vite copies them to
+    // dist/) — e.g. leanWorker.js — should be served before falling back to
+    // the legacy raw harness root.
+    if (IDE_AVAILABLE && fs.existsSync(path.join(IDE_DIST, rel))) {
+      const candidate = path.join(IDE_DIST, rel);
+      const resolvedDist = path.resolve(candidate);
+      if (resolvedDist.startsWith(path.resolve(IDE_DIST))) {
+        target = candidate;
+        sendFile(res, target);
+        return;
+      }
+    }
     target = path.join(ROOT, rel);
     const resolved = path.resolve(target);
     if (!resolved.startsWith(path.resolve(ROOT))) {

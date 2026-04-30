@@ -2,14 +2,26 @@
 
 Running Lean 4 + (eventually) Mathlib in WebAssembly. Plan: `~/.claude/plans/silly-wibbling-hellman.md`.
 
-## Status (2026-04-23)
+## Status (2026-04-28)
 
-**Phase 2 shipped: React/Redux Lean IDE with server-side compile + Mermaid design tool.**
+**Phase 2 shipped: React/Redux Lean IDE with server-side compile + Mermaid design tool. Phase 1 (in-browser compile) is upstream-blocked.**
 
-- **`packages/ide/`** — React 18 + Redux Toolkit + Monaco + Mermaid on Vite. Dev server at `:5173` (proxies `/api` and `/vendor` to `:8787`). Top menu with proof tabs, editor/architecture views, Output/Design right pane split. Proofs persist to localStorage.
-- **`packages/tests/public/ide.html`** — legacy vanilla-HTML IDE from the previous step, still works.
-- **`/` on :8787** — lower-level WASM harness for experimentation. Buttons for `--version`, `--help`, `--print-libdir`, olean seeding. These commands *do* run Lean WASM in-browser.
-- Playwright suite: **15 pass / 2 skip / 0 fail** (~4 min).
+- **`packages/ide/`** — React 18 + Redux Toolkit + Monaco + Mermaid on Vite. Built to static files served at `/` on :8787.
+- **`/debug`** — lower-level WASM harness for experimentation. Buttons for `--version`, `--help`, `--print-libdir`, olean seeding. These commands *do* run Lean WASM in-browser.
+- **Web Worker harness** at `packages/ide/public/leanWorker.js` — architecturally complete; awaits a working v4.27 binary. Drives v4.15 fine for metadata commands.
+- Playwright suite: **31 pass / 5 skip / 0 fail** (browser + node combined).
+- **In-browser elaboration** — eight v4.27 rebuild combos (MT=ON/OFF × PROXY_TO_PTHREAD × MAIN_MODULE × libuv stubs) all trap `unreachable` at wasm-fn 139283 in `lean_main` startup. The trap is in Lean's own code, identifiable only with WASM debug symbols (a non-stripped rebuild we haven't done). Server-side compile is the production path; Lean4Web ships the same architecture. Memory: `v427_in_browser_dead_end.md`.
+- **WASM rebuild infrastructure** at `docker/` + `scripts/docker-build.sh` — reproducible, ~21 min hot from ccache, ~6h cold. Memory: `v427_wasm_build_recipe.md`.
+
+### IDE features
+
+- **Proof menu** with persisted tabs, new / rename (dbl-click) / delete.
+- **Lean 4 syntax highlighting** — custom Monaco tokenizer (`packages/ide/src/lib/leanLanguage.ts`) covers keywords, tactics, operators, comments, strings, numbers, `#eval`/`#check`/`#print`, unicode operators (`∀`, `∃`, `→`, `λ`, `∧`, `∨`, `↦`, etc.).
+- **Inline diagnostic markers** — after compile, errors/warnings/info show as underlined squiggles in Monaco via `setModelMarkers`, with tooltips on hover. The structured diagnostics list in the right pane mirrors them; click a row to jump the cursor.
+- **Cancel-compile** — while compiling, the Compile button flips to a red Cancel. Click → `AbortController` aborts the fetch → server's `req.on('close')` sends `SIGKILL` to the subprocess → Lean stops within a second.
+- **BYOML** — per-proof list of extra library roots; `/api/compile` passes them as `LEAN_EXTRA_PATH`. Persists per proof.
+- **Design pane** — per-proof Mermaid diagram with live preview + mermaid source editor.
+- **Architecture view** — four Mermaid diagrams (system, compile flow, React/Redux wiring, in-browser WASM status) plus prose.
 
 **What runs in-browser WASM:** metadata commands (`--version`, `--help`, `--print-libdir`), olean seeding into MEMFS (234 files, 86 MiB in ~1.5 s), pthread workers, SharedArrayBuffer.
 

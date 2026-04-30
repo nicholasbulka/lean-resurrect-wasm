@@ -31,6 +31,14 @@ packages/tests/playwright-report/
 packages/tests/blob-report/
 playwright/.cache/
 
+# ---- WASM rebuild artifacts (huge, regeneratable from Docker build) ----
+# build-wasm/ holds stage0 (~700 MB) + stage1 (~3 GB) intermediate output;
+# .ccache/ is the compiler cache (~400 MB). Both come back via
+# scripts/docker-build.sh. logs/ is per-run build output.
+build-wasm/
+.ccache/
+logs/
+
 # ---- Lean build artifacts (if any slip into preflight/) ----
 # .olean/.ilean/.c outputs are per-toolchain; regenerate from .lean sources.
 # Track the .lean fixtures themselves.
@@ -64,5 +72,5 @@ Thumbs.db
 
 # ---- Claude / local agent state ----
 # Project-level CLAUDE.md is worth tracking if you add one; per-user
-# local settings are not.
-.claude/settings.local.json
+# local settings are not. Also exclude per-user memory + project state.
+.claude/

@@ -14,7 +14,7 @@ import { test, expect } from '@playwright/test';
 test.describe('browser harness: infrastructure', () => {
   test('page loads and status element renders', async ({ page }) => {
     await page.goto('/debug');
-    await expect(page.locator('h1')).toHaveText('lean-in-wasm');
+    await expect(page.locator('h1')).toContainText('lean-in-wasm');
     await expect(page.locator('#state')).toBeVisible();
   });
 

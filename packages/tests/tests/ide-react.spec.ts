@@ -106,6 +106,52 @@ test.describe('React IDE', () => {
     expect(val).toContain('badname');
   });
 
+  test('Lean syntax highlighting is active (lean4 language registered)', async ({ page }) => {
+    await page.goto(IDE_URL);
+    await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
+    const hasLean = await page.evaluate(() => {
+      const monaco = (window as any).__ideEditor?.monaco;
+      return !!monaco?.languages?.getLanguages?.().some((l: any) => l.id === 'lean4');
+    });
+    expect(hasLean).toBe(true);
+    // Monaco emits per-token spans (class names mtk*) for highlighted content.
+    const tokenSpans = await page.locator('.monaco-editor .view-line span span').count();
+    expect(tokenSpans).toBeGreaterThan(0);
+  });
+
+  test('Cancel button aborts an in-flight compile', async ({ page }) => {
+    test.setTimeout(2 * 60_000);
+    await page.goto(IDE_URL);
+    await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
+    await page.evaluate(() => (window as any).__ideEditor.setValue('#eval 1 + 1\n'));
+    await page.waitForTimeout(200);
+
+    await page.getByRole('button', { name: /^compile/i }).first().click();
+
+    // Status flips to 'running' → cancel button appears.
+    await expect(page.locator('.pane-header .status.running')).toBeVisible({ timeout: 20_000 });
+    const cancelBtn = page.getByRole('button', { name: /^cancel$/i });
+    await expect(cancelBtn).toBeVisible();
+
+    // Click cancel; status should return to 'idle' quickly (fetch aborts, thunk rejects AbortError).
+    await cancelBtn.click();
+    await expect(page.locator('.pane-header .status.running')).not.toBeVisible({ timeout: 15_000 });
+    // Compile button is back.
+    await expect(page.getByRole('button', { name: /^compile/i })).toBeVisible();
+  });
+
+  test('Monaco inline markers appear after a compile error', async ({ page }) => {
+    test.setTimeout(5 * 60_000);
+    await page.goto(IDE_URL);
+    await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
+    await page.evaluate(() => (window as any).__ideEditor.setValue('def foo : Nat := badname\n'));
+    await page.waitForTimeout(300);
+    await page.getByRole('button', { name: /compile/i }).first().click();
+    await expect(page.locator('.pane-header .status.fail')).toBeVisible({ timeout: 4 * 60_000 });
+    const markerCount = await page.evaluate(() => (window as any).__ideEditor.getMarkers().length);
+    expect(markerCount).toBeGreaterThan(0);
+  });
+
   test('BYOML: library-paths editor adds, renders, and persists paths', async ({ page }) => {
     await page.goto(IDE_URL);
     // Add two paths.

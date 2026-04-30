@@ -55,6 +55,39 @@
   window.__hasSAB = typeof SharedArrayBuffer !== 'undefined';
   log('crossOriginIsolated:', window.__crossOriginIsolated, ' SharedArrayBuffer:', window.__hasSAB);
 
+  // Instrument Atomics.wait on the main thread: browsers forbid blocking
+  // Atomics.wait here (the spec requires throwing TypeError). If Lean's
+  // pthread code path tries to block on main, we'll see it loud and clear.
+  // Emscripten apps sidestep this with -s PROXY_TO_PTHREAD=1, which we
+  // suspect the v4.15 WASM was built without.
+  // Heartbeat: if this stops, main thread is blocked. If it keeps going
+  // but Lean makes no progress, worker thread is blocked (or there is no
+  // work queued).
+  let heartbeat = 0;
+  setInterval(() => {
+    heartbeat += 1;
+    if (heartbeat % 2 === 0) console.log('[heartbeat]', heartbeat, 'elapsed=', heartbeat * 0.5 + 's');
+  }, 500);
+
+  if (typeof Atomics !== 'undefined' && typeof Atomics.wait === 'function') {
+    const origWait = Atomics.wait.bind(Atomics);
+    let waitCount = 0;
+    Atomics.wait = function(typedArray, index, value, timeout) {
+      waitCount += 1;
+      console.log('[harness:atomics.wait]', waitCount, 'timeout=', timeout, 'stack=', new Error().stack?.split('\n').slice(1, 5).join(' | '));
+      try {
+        const r = origWait(typedArray, index, value, timeout);
+        console.log('[harness:atomics.wait] returned', r);
+        return r;
+      } catch (e) {
+        console.log('[harness:atomics.wait] THREW', e && e.message);
+        throw e;
+      }
+    };
+    Atomics.waitAsync = Atomics.waitAsync || (() => { console.log('[harness] no Atomics.waitAsync'); });
+    window.__atomicsWaitCount = () => waitCount;
+  }
+
   // --- Shim 1: pass Node-only check; keep ENVIRONMENT_IS_NODE=false.
   if (typeof globalThis.process === 'undefined') {
     globalThis.process = {
