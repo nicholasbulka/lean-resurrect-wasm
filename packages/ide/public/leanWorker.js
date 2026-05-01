@@ -147,23 +147,52 @@ async function init(leanJsUrl, manifestUrl) {
 
   postProgress({ phase: 'fetching-manifest', message: 'fetching olean manifest' });
   const manifest = await (await fetch(manifestUrl)).json();
+  // v4.27 module system: load Init's full file family (.olean, .server,
+  // .private, .ir) plus all per-module variants under Init/. Without all
+  // four, Lean errors with "missing data file" / "missing IR data file".
   initEntries = manifest.entries.filter(
-    (e) => e.path === 'Init.olean' || e.path.startsWith('Init/')
+    (e) =>
+      e.path === 'Init.olean' || e.path === 'Init.olean.server' ||
+      e.path === 'Init.olean.private' || e.path === 'Init.ir' ||
+      e.path.startsWith('Init/')
   );
   console.log('[leanWorker] manifest: ' + initEntries.length + ' Init entries');
 
   postProgress({ phase: 'fetching-oleans', current: 0, total: initEntries.length, message: 'downloading Init oleans' });
+  // Cap concurrency: browsers limit to ~6 connections per origin and a
+  // small static server can drop requests under heavy load. Firing 2000+
+  // fetches at once was causing "Failed to fetch" mid-batch.
+  const CONCURRENCY = 8;
+  const oleanBytes = new Array(initEntries.length);
   let done = 0;
-  const oleanBytes = await Promise.all(
-    initEntries.map(async (e) => {
-      const r = await fetch(manifest.root + '/' + e.path);
-      if (!r.ok) throw new Error('fetch ' + e.path);
-      const bytes = new Uint8Array(await r.arrayBuffer());
+  let nextIdx = 0;
+  async function worker() {
+    while (true) {
+      const i = nextIdx++;
+      if (i >= initEntries.length) return;
+      const e = initEntries[i];
+      // Retry once on transient failure — keep-alive races, etc.
+      let bytes = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const r = await fetch(manifest.root + '/' + e.path);
+          if (!r.ok) throw new Error('http ' + r.status + ' ' + e.path);
+          bytes = new Uint8Array(await r.arrayBuffer());
+          break;
+        } catch (err) {
+          if (attempt === 2) throw err;
+          await new Promise((res) => setTimeout(res, 200 * (attempt + 1)));
+        }
+      }
+      oleanBytes[i] = { path: e.path, bytes };
       done += 1;
-      postProgress({ phase: 'fetching-oleans', current: done, total: initEntries.length, message: 'downloading Init oleans' });
-      return { path: e.path, bytes };
-    })
-  );
+      // Throttle progress posts so we don't flood the main thread.
+      if (done % 25 === 0 || done === initEntries.length) {
+        postProgress({ phase: 'fetching-oleans', current: done, total: initEntries.length, message: 'downloading Init oleans' });
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
   console.log('[leanWorker] fetched ' + oleanBytes.length + ' oleans');
 
   // locateFile resolves "lean.wasm" against the directory of lean.js.
@@ -214,6 +243,30 @@ async function init(leanJsUrl, manifestUrl) {
   // proxied lean_main (which runs on a pthread); the pthread worker
   // re-loads lean.js from `mainScriptUrlOrBlob`, and an unpatched copy
   // there throws and kills the whole compile.
+  // Wrap the Worker constructor so we can listen to messages emcc-spawned
+  // pthread workers post. Inside each pthread, the patched lean.js (Blob
+  // URL below) overrides Module.print/printErr to postMessage with
+  // typed envelopes {__leanStdout, __leanStderr}. Without the wrapping,
+  // pthread output would land in the pthread worker's invisible console.
+  // Multiple listeners on a Worker are fine — emcc's PThread machinery
+  // also addEventListener('message') for its own protocol.
+  const PthreadOutputBuf = { stdout: '', stderr: '' };
+  self.__leanPthreadBuf = PthreadOutputBuf;
+  const origWorkerCtor = self.Worker;
+  self.Worker = function PatchedWorker(url, options) {
+    const w = new origWorkerCtor(url, options);
+    w.addEventListener('message', (ev) => {
+      const m = ev.data;
+      if (m && typeof m === 'object') {
+        if (m.__leanStdout !== undefined) PthreadOutputBuf.stdout += m.__leanStdout + '\n';
+        if (m.__leanStderr !== undefined) PthreadOutputBuf.stderr += m.__leanStderr + '\n';
+      }
+    });
+    return w;
+  };
+  Object.setPrototypeOf(self.Worker, origWorkerCtor);
+  self.Worker.prototype = origWorkerCtor.prototype;
+
   const blob = new Blob([src], { type: 'application/javascript' });
   const blobUrl = URL.createObjectURL(blob);
   // Re-point the pthread workers at the patched blob.
@@ -247,6 +300,11 @@ async function compile(requestId, source, libraryPaths) {
   const started = Date.now();
   let stdoutBuf = '';
   let stderrBuf = '';
+  // Reset cross-pthread output buffers so they only collect THIS compile.
+  if (self.__leanPthreadBuf) {
+    self.__leanPthreadBuf.stdout = '';
+    self.__leanPthreadBuf.stderr = '';
+  }
   M.print = (...a) => { stdoutBuf += a.join(' ') + '\n'; };
   M.printErr = (...a) => { stderrBuf += a.join(' ') + '\n'; };
 
@@ -318,6 +376,13 @@ async function compile(requestId, source, libraryPaths) {
     return;
   }
 
+  // Merge in pthread-relayed output (PROXY_TO_PTHREAD: lean_main runs in
+  // a pthread whose Module.print posts {__leanStdout} to us; the wrapped
+  // Worker constructor in init() catches them into __leanPthreadBuf).
+  if (self.__leanPthreadBuf) {
+    if (self.__leanPthreadBuf.stdout) stdoutBuf += self.__leanPthreadBuf.stdout;
+    if (self.__leanPthreadBuf.stderr) stderrBuf += self.__leanPthreadBuf.stderr;
+  }
   const { diagnostics, residualStdout } = parseJsonDiagnostics(stdoutBuf);
   postMessage({
     type: 'result',

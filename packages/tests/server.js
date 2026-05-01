@@ -25,6 +25,14 @@ const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.mjs': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.map': 'application/json; charset=utf-8',
   '.wasm': 'application/wasm',
   '.json': 'application/json; charset=utf-8',
   '.olean': 'application/octet-stream',
@@ -81,7 +89,20 @@ let manifestCache = null;
 function getManifest() {
   if (manifestCache) return manifestCache;
   const leanLib = path.join(VENDOR, 'lib', 'lean');
-  const entries = walk(leanLib, leanLib, (p) => p.endsWith('.olean'));
+  // v4.27 module system splits per-module data into four file types:
+  //   .olean          — exported (always required)
+  //   .olean.server   — server-level (LSP)
+  //   .olean.private  — private (full elaborator)
+  //   .ir             — IR for tactic interpretation
+  // Lean's findOLeanParts loads parts[0..2] by ctorIdx; missing files
+  // surface as "missing data file" / "missing IR data file". We must
+  // ship all four for elaboration to succeed in-browser.
+  const entries = walk(leanLib, leanLib, (p) =>
+    p.endsWith('.olean') ||
+    p.endsWith('.olean.server') ||
+    p.endsWith('.olean.private') ||
+    p.endsWith('.ir')
+  );
   manifestCache = {
     root: '/vendor/lib/lean',
     count: entries.length,

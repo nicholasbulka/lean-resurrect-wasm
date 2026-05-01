@@ -74,3 +74,4 @@ Thumbs.db
 # Project-level CLAUDE.md is worth tracking if you add one; per-user
 # local settings are not. Also exclude per-user memory + project state.
 .claude/
+.tmp-test/

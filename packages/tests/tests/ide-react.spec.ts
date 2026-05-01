@@ -94,7 +94,9 @@ test.describe('React IDE', () => {
     // Diagnostic row should appear.
     const diag = page.locator('.diag.sev-error').first();
     await expect(diag).toBeVisible();
-    await expect(diag.locator('.diag-msg')).toContainText("unknown identifier 'badname'");
+    // v4.27 wording: `Unknown identifier \`badname\`` (capital U, backticks).
+    // Earlier Lean versions used `unknown identifier 'badname'`. Match either.
+    await expect(diag.locator('.diag-msg')).toContainText(/[Uu]nknown identifier [`']badname[`']/);
     // Location badge shows 1:17.
     await expect(diag.locator('.loc')).toHaveText('1:17');
 
