@@ -13,7 +13,10 @@ interface UiState {
 const initialState: UiState = {
   view: 'editor',
   rightPane: 'output',
-  compileMode: 'server',
+  // Default to in-page WASM so the IDE works as a static-files-only
+  // app (no server compile endpoint required). The /api/compile path
+  // remains available as a fallback users can pick from the toggle.
+  compileMode: 'browser',
 };
 
 const slice = createSlice({

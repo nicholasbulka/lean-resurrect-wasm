@@ -60,6 +60,10 @@ test.describe('React IDE', () => {
     await page.goto(IDE_URL);
 
     await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
+    // Use server mode for compile assertions: browser-mode (in-page WASM)
+    // is the new default but its diagnostic relay is the skipped path
+    // (see ide-compile-mode.spec.ts). Server mode is fully working.
+    await page.locator('.compile-mode select').selectOption('server');
     await page.evaluate(() => (window as any).__ideEditor.setValue('#eval 1 + 1\n'));
     // Wait until Monaco's content matches what we set (onChange fired) AND
     // until the editor-wide re-render has settled.
@@ -80,6 +84,9 @@ test.describe('React IDE', () => {
     test.setTimeout(5 * 60_000);
     await page.goto(IDE_URL);
     await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
+    // Server-mode for diagnostic assertions (browser-mode default's
+    // pthread output relay is the skipped path).
+    await page.locator('.compile-mode select').selectOption('server');
     await page.evaluate(() => (window as any).__ideEditor.setValue('def foo : Nat := badname\n'));
     await page.waitForFunction(
       () => (window as any).__ideEditor.getValue().includes('badname'),
@@ -125,6 +132,10 @@ test.describe('React IDE', () => {
     test.setTimeout(2 * 60_000);
     await page.goto(IDE_URL);
     await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
+    // Server mode: cancel via fetch's AbortController is the proven path;
+    // browser-mode cancel routes through the worker postMessage protocol
+    // and is gated on the same pthread relay as the skipped compile test.
+    await page.locator('.compile-mode select').selectOption('server');
     await page.evaluate(() => (window as any).__ideEditor.setValue('#eval 1 + 1\n'));
     await page.waitForTimeout(200);
 
@@ -146,6 +157,9 @@ test.describe('React IDE', () => {
     test.setTimeout(5 * 60_000);
     await page.goto(IDE_URL);
     await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
+    // Server mode for the marker assertion (browser mode's diagnostic
+    // relay is the skipped path).
+    await page.locator('.compile-mode select').selectOption('server');
     await page.evaluate(() => (window as any).__ideEditor.setValue('def foo : Nat := badname\n'));
     await page.waitForTimeout(300);
     await page.getByRole('button', { name: /compile/i }).first().click();

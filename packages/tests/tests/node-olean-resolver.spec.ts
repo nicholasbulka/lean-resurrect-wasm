@@ -96,13 +96,31 @@ async function seedRemoteLibrary(remote: string): Promise<void> {
   }
 }
 
-// Same blocker as node-byoml: LEAN_PATH (env-driven user search path)
-// isn't honored by v4.27 WASM Lean under PROXY_TO_PTHREAD. The resolver
-// hook in trace_fs.js is the right architecture; what's missing is the
-// path stage AT WHICH Lean asks for missing oleans. With install-prefix-
-// only resolution, Lean only ever asks for stdlib paths, so the
-// resolver never sees user-library lookups. Re-enable once LEAN_PATH
-// propagation is wired through to the worker (see node-byoml.spec.ts).
+// SKIPPED — same blocker as node-byoml.spec.ts. See that file for the
+// full chain-of-events explanation.
+//
+// Specific to this test: the FS.stat / FS.open interceptor in
+// preflight/trace_fs.js fires resolver.resolve(p) for any *.olean,
+// *.olean.server, *.olean.private, or *.ir path that returns ENOENT.
+// That interceptor IS being installed correctly (verified via the
+// preRun setup), but it never gets called for user libraries because
+// Lean's search path doesn't include the user's cache directory:
+// LEAN_PATH wasn't honored, so the *only* paths Lean looks at are
+// under the install-prefix's lib/lean (where stdlib lives). User
+// libraries don't have entries in install-prefix/lib/lean, so Lean
+// errors with "unknown module prefix" before any FS.open even fires.
+//
+// Re-enable conditions (same as node-byoml.spec.ts):
+//   (a) LEAN_PATH propagation to the pthread worker, OR
+//   (b) Lean rebuilt with init_search_path reading LEAN_PATH another
+//       way, OR
+//   (c) Drop PROXY_TO_PTHREAD (loses Web Worker compatibility).
+//
+// Once LEAN_PATH is honored, this test should work as-is: it pre-
+// compiles a 2-module library to a `remote/` directory, mounts a
+// `cache/` directory via LEAN_EXTRA_PATH, and verifies the resolver
+// fires for missing oleans, the cache populates byte-for-byte, and
+// warm-cache runs don't re-fire the resolver.
 test.describe.skip('olean-on-demand: fetch-on-miss + cache', () => {
   test('first run populates cache; second run is cache-hot; no resolver → failure', async () => {
     test.setTimeout(20 * 60_000);

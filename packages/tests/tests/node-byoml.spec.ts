@@ -28,15 +28,56 @@ function jsonLines(stdout: string): any[] {
     .filter(Boolean);
 }
 
-// Both BYOML tests depend on LEAN_PATH being honored at lean_main startup.
-// In v4.27 WASM with PROXY_TO_PTHREAD=1 the ENV-propagation that the
-// upstream lean.cpp EM_ASM does (process.env["LEAN_PATH"] → ENV) was
-// stripped by our patch alongside the CLI node-check, AND the pthread
-// worker that runs lean_main has its own fresh closure-scoped var ENV
-// that our preRun setting doesn't reach. Net: only the install-prefix
-// search path is consulted. Re-enable when we either (a) restore the
-// ENV propagation in patch-leanjs.js with a worker-aware path, or (b)
-// rebuild Lean with init_search_path reading LEAN_PATH directly.
+// SKIPPED — LEAN_PATH not honored under MT=ON+PROXY_TO_PTHREAD.
+//
+// Symptom: `import MyLib` (where MyLib is a user-compiled olean placed in
+// a directory passed via LEAN_EXTRA_PATH) fails with:
+//   "unknown module prefix 'MyLib'
+//    No directory 'MyLib' or file 'MyLib.olean' in the search path entries:
+//    /Users/.../vendor/lean-linux_wasm32/lib/lean"
+// — only the install-prefix-derived stdlib path is consulted, regardless
+// of LEAN_PATH / LEAN_EXTRA_PATH.
+//
+// Why this happens (chain of events, all confirmed empirically today):
+// 1. v4.27 Lean's `init_search_path` (Lean/Util/Path.lean:93-105) calls
+//    `IO.getEnv "LEAN_PATH"` to add user-supplied search paths on top of
+//    the install-prefix builtin path.
+// 2. Upstream `src/util/shell.cpp:287-301` has an EM_ASM block that runs
+//    *before* init_search_path and copies process.env["LEAN_PATH"] into
+//    the JS closure-scoped var ENV, plus mounts /home, /tmp, and chdirs.
+//    That EM_ASM also throws if `process.release.name !== "node"`.
+// 3. Our patch (scripts/patch-leanjs.js) strips that EM_ASM wholesale to
+//    bypass the Node-only assertion — and takes the LEAN_PATH propagation
+//    with it.
+// 4. To compensate, our patch's preRun forwards process.env.LEAN_PATH /
+//    LEAN_EXTRA_PATH into Module.ENV. Verified: Module.ENV.LEAN_PATH IS
+//    set correctly on the main thread.
+// 5. BUT under PROXY_TO_PTHREAD=1, lean_main runs in a *pthread worker*
+//    (em-pthread Worker spawned via worker_threads.Worker on Node, or
+//    new Worker(...) in browser). That worker re-evaluates lean.js
+//    fresh, getting its own private `var ENV={};` closure. Our patch's
+//    `Module["ENV"]=ENV` exposes it, but the pthread's preRun doesn't
+//    inherit the main thread's Module.ENV values.
+// 6. So when init_search_path runs in the pthread and calls getenv via
+//    getEnvStrings, it reads the empty pthread ENV → no LEAN_PATH → only
+//    the install-prefix builtin search path gets used.
+//
+// Empirically verified: even setting LEAN_PATH="/abs/path" on the shell
+// (so it's in process.env in both main and worker_threads-spawned
+// pthread), the pthread's getEnvStrings doesn't see it.
+//
+// Re-enable paths:
+// (a) Wire process.env→Module.ENV inside the patch's pthread branch
+//     using SharedArrayBuffer or Atomics.wait so the main thread can
+//     hand the pthread its initial ENV before the pthread reads it.
+//     Tricky because the patch prefix runs at worker init, before
+//     SharedArrayBuffer-coordinated handoff is wired up.
+// (b) Rebuild Lean with init_search_path reading LEAN_PATH directly
+//     (e.g. via a dedicated extern that the JS preRun can call into).
+//     ~5h Lake-cascade rebuild.
+// (c) Drop PROXY_TO_PTHREAD and run main on the outer thread. Loses
+//     SharedArrayBuffer / Atomics.wait support. Browser-side this would
+//     freeze the page; Node-side it'd be acceptable.
 test.describe.skip('BYOML: bring-your-own-library in Node', () => {
   test('compile a custom lib, then import it from a consumer file', async () => {
     test.setTimeout(12 * 60_000);
