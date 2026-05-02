@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { lezer } from '@lezer/generator/rollup';
 
 export default defineConfig({
   server: {
@@ -15,5 +16,5 @@ export default defineConfig({
       '/vendor': 'http://localhost:8787',
     },
   },
-  plugins: [react()],
+  plugins: [react(), lezer()],
 });

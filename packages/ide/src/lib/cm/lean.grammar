@@ -1,0 +1,14 @@
+// Coarse Lezer grammar for Lean 4. Phase 3a: minimum viable — just enough
+// for the build pipeline to compile something and produce a tree. Real
+// top-level structure lands in 3b; body absorption in 3c; styleTags in 3d.
+
+@top File { (Number | Identifier | Other)* }
+
+@tokens {
+  Identifier { $[a-zA-Z_] $[a-zA-Z0-9_']* }
+  Number { $[0-9]+ }
+  Other { ![ \n\t\rA-Za-z0-9_]+ }
+  whitespace { $[ \n\t\r]+ }
+}
+
+@skip { whitespace }
