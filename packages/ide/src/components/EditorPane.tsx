@@ -5,6 +5,7 @@ import { updateLean } from '../slices/proofsSlice';
 import { compileSource, cancelCurrentCompile } from '../slices/compileSlice';
 import { LibraryPaths } from './LibraryPaths';
 import { registerLeanLanguage } from '../lib/leanLanguage';
+import { createMonacoBridge } from '../lib/editorBridge';
 import type { LeanDiagnostic } from '../slices/compileSlice';
 
 export function EditorPane() {
@@ -59,30 +60,7 @@ export function EditorPane() {
   // so Playwright tests can set the editor value directly. `ready` flips to
   // true after onMount runs — consumers MUST wait for it before calling
   // jumpTo / setValue, otherwise the editor hasn't been created yet.
-  (window as any).__ideEditor = {
-    ready,
-    monaco: monacoRef.current,
-    getMarkers: (): unknown[] => {
-      const monaco = monacoRef.current;
-      const ed = editorRef.current;
-      if (!monaco || !ed) return [];
-      const model = ed.getModel();
-      return model ? monaco.editor.getModelMarkers({ resource: model.uri }) : [];
-    },
-    jumpTo: (line: number, column: number) => {
-      const ed = editorRef.current;
-      if (!ed) return;
-      ed.focus();
-      ed.setPosition({ lineNumber: line, column });
-      ed.revealPositionInCenter({ lineNumber: line, column });
-    },
-    setValue: (text: string) => {
-      const ed = editorRef.current;
-      if (!ed) return;
-      ed.setValue(text);
-    },
-    getValue: (): string => editorRef.current?.getValue() ?? '',
-  };
+  (window as any).__ideEditor = createMonacoBridge(editorRef, monacoRef, ready);
 
   return (
     <div className="pane">
