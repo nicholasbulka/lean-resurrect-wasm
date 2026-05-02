@@ -1,4 +1,7 @@
 import type { OnMount } from '@monaco-editor/react';
+import { EditorSelection } from '@codemirror/state';
+import { forEachDiagnostic } from '@codemirror/lint';
+import type { EditorView } from '@codemirror/view';
 
 type MonacoEditor = Parameters<OnMount>[0];
 type MonacoNs = Parameters<OnMount>[1];
@@ -37,6 +40,43 @@ export function createMonacoBridge(
       if (!monaco || !ed) return [];
       const model = ed.getModel();
       return model ? monaco.editor.getModelMarkers({ resource: model.uri }) : [];
+    },
+  };
+}
+
+export function createCm6Bridge(
+  viewRef: { current: EditorView | null },
+  ready: boolean,
+): EditorBridge {
+  return {
+    ready,
+    backend: 'cm6',
+    getValue: () => viewRef.current?.state.doc.toString() ?? '',
+    setValue: (text) => {
+      const view = viewRef.current;
+      if (!view) return;
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: text },
+      });
+    },
+    jumpTo: (line, column) => {
+      const view = viewRef.current;
+      if (!view) return;
+      const safeLine = Math.max(1, Math.min(line, view.state.doc.lines));
+      const lineObj = view.state.doc.line(safeLine);
+      const offset = Math.min(lineObj.from + Math.max(0, column - 1), lineObj.to);
+      view.focus();
+      view.dispatch({
+        selection: EditorSelection.cursor(offset),
+        scrollIntoView: true,
+      });
+    },
+    getMarkers: () => {
+      const view = viewRef.current;
+      if (!view) return [];
+      const out: unknown[] = [];
+      forEachDiagnostic(view.state, (d) => { out.push(d); });
+      return out;
     },
   };
 }
