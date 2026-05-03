@@ -1,14 +1,154 @@
-// Coarse Lezer grammar for Lean 4. Phase 3a: minimum viable — just enough
-// for the build pipeline to compile something and produce a tree. Real
-// top-level structure lands in 3b; body absorption in 3c; styleTags in 3d.
+// Coarse Lezer grammar for Lean 4.27. Phase 3b: token surface + top-level
+// keyword classification. No structural enclosure of declarations yet —
+// that lands in 3c (body absorption). styleTags in 3d.
+//
+// Reference: docs/lean4-reference/grammar-reference-v4.27.md
+// Vendored source: vendor/lean4-src/src/Lean/Parser/Command.lean
+//
+// Known limitation in this phase: block comments (/- ... -/) are matched
+// by regex and DO NOT nest. Real Lean supports nested block comments. An
+// external tokenizer was attempted but Lezer's `extend` option only fires
+// at EOF in our setup. Revisit if the corpus surfaces a nested-comment
+// case that misparses.
 
-@top File { (Number | Identifier | Other)* }
+@top File { item* }
+
+item {
+  LineComment |
+  ModuleDocComment |
+  DocBlockComment |
+  BlockComment |
+  declarationKeyword |
+  controlKeyword |
+  modifierKeyword |
+  namespaceKeyword |
+  notationKeyword |
+  metaKeyword |
+  hashCommand |
+  Identifier |
+  HashIdent |
+  Number |
+  StringLit |
+  CharLit |
+  Operator |
+  Punct |
+  Other
+}
+
+// === Keywords (specialized from Identifier) ===
+
+declarationKeyword {
+  kw<"def"> | kw<"theorem"> | kw<"lemma"> | kw<"example"> |
+  kw<"instance"> | kw<"class"> | kw<"structure"> |
+  kw<"inductive"> | kw<"coinductive"> | kw<"abbrev"> |
+  kw<"axiom"> | kw<"opaque"> | kw<"mutual">
+}
+
+modifierKeyword {
+  kw<"private"> | kw<"public"> | kw<"protected"> |
+  kw<"noncomputable"> | kw<"unsafe"> | kw<"partial"> |
+  kw<"nonrec"> | kw<"meta">
+}
+
+namespaceKeyword {
+  kw<"namespace"> | kw<"section"> | kw<"end"> |
+  kw<"open"> | kw<"export"> | kw<"variable"> |
+  kw<"include"> | kw<"omit"> | kw<"universe"> |
+  kw<"import"> | kw<"deriving">
+}
+
+controlKeyword {
+  kw<"if"> | kw<"then"> | kw<"else"> |
+  kw<"match"> | kw<"with"> | kw<"fun"> |
+  kw<"do"> | kw<"return"> | kw<"let"> | kw<"have"> |
+  kw<"for"> | kw<"in"> | kw<"unless"> |
+  kw<"try"> | kw<"catch"> |
+  kw<"by"> | kw<"calc"> | kw<"show"> | kw<"suffices"> |
+  kw<"where"> |
+  kw<"sorry">
+}
+
+notationKeyword {
+  kw<"notation"> | kw<"infix"> | kw<"infixl"> | kw<"infixr"> |
+  kw<"prefix"> | kw<"postfix">
+}
+
+metaKeyword {
+  kw<"syntax"> | kw<"macro"> | kw<"macro_rules"> |
+  kw<"elab"> | kw<"elab_rules"> | kw<"attribute"> |
+  kw<"set_option"> | kw<"initialize">
+}
+
+hashCommand {
+  hashCmd<"#check"> | hashCmd<"#eval"> | hashCmd<"#eval!"> |
+  hashCmd<"#synth"> | hashCmd<"#print"> | hashCmd<"#where"> |
+  hashCmd<"#exit"> | hashCmd<"#reduce"> | hashCmd<"#find">
+}
+
+kw<term> { @specialize[@name={term}]<Identifier, term> }
+hashCmd<term> { @specialize[@name={term}]<HashIdent, term> }
+
+// === Tokens ===
 
 @tokens {
-  Identifier { $[a-zA-Z_] $[a-zA-Z0-9_']* }
-  Number { $[0-9]+ }
-  Other { ![ \n\t\rA-Za-z0-9_]+ }
-  whitespace { $[ \n\t\r]+ }
+  // Identifiers — letter (or _) then letters/digits/_/'/!/?.
+  // Greek + math letters that show up routinely in Lean code.
+  Identifier {
+    $[a-zA-Z_α-ωΑ-Ωℕℤℚℝℂ] $[a-zA-Z0-9_'!?α-ωΑ-Ωℕℤℚℝℂ]*
+  }
+
+  HashIdent { "#" $[a-zA-Z_]+ "!"? }
+
+  LineComment { "--" ![\n]* }
+
+  // Block comments via regex. Non-nesting (see header note).
+  // Order in @precedence below is what disambiguates these three forms:
+  // ModuleDoc (/-!) > DocBlock (/--) > Block (/-).
+  ModuleDocComment { "/-!" blockBody "-/" }
+  DocBlockComment  { "/--" blockBody "-/" }
+  BlockComment     { "/-"  blockBody "-/" }
+  // Body of a block comment: any char except a `-` that begins `-/`.
+  blockBody { (![\-] | "-" ![/])* }
+
+  Number {
+    "0" $[xX] $[0-9a-fA-F_]+ |
+    "0" $[bB] $[01_]+ |
+    "0" $[oO] $[0-7_]+ |
+    $[0-9] $[0-9_]* ("." $[0-9] $[0-9_]*)? ($[eE] $[+\-]? $[0-9] $[0-9_]*)?
+  }
+
+  StringLit { '"' (!["\\] | "\\" _)* '"' }
+
+  CharLit { "'" (!['\\] | "\\" _) "'" }
+
+  // '/' and '-' live in Punct (not Operator) so block/line comments win
+  // by being more specific multi-char tokens.
+  Operator {
+    ":=" | "=>" | "->" | "<-" | "..." | ".." |
+    "→" | "←" | "↦" | "⊢" | "∀" | "∃" | "∧" | "∨" | "¬" |
+    "≤" | "≥" | "≠" | "∈" | "∉" | "⊆" | "⊇" |
+    $[+*%<>=!&|^~?:]+
+  }
+
+  Punct {
+    $[(){}\[\];,@./\-\\`] | "⟨" | "⟩" | "⦃" | "⦄" | "«" | "»" | "_"
+  }
+
+  whitespace { $[ \t\r\n]+ }
+
+  // Last-resort catchall so unrecognized Unicode (math letters, bullets,
+  // centered-dot, etc.) doesn't produce parser errors. Any token matched
+  // here can later be reclassified by extending Identifier/Operator/Punct
+  // ranges.
+  Other { ![ \t\r\n] }
+
+  @precedence {
+    LineComment,
+    ModuleDocComment, DocBlockComment, BlockComment,
+    StringLit, CharLit,
+    Number, HashIdent, Identifier,
+    Operator, Punct, Other
+  }
 }
 
 @skip { whitespace }

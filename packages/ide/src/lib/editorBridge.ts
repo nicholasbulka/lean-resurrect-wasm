@@ -14,6 +14,9 @@ export interface EditorBridge {
   jumpTo(line: number, column: number): void;
   getMarkers(): unknown[];
   monaco?: MonacoNs;
+  // Debug/test-only escape hatch. Stable while we develop the grammar; do
+  // not couple production code to it.
+  _view?: EditorView;
 }
 
 export function createMonacoBridge(
@@ -51,6 +54,7 @@ export function createCm6Bridge(
   return {
     ready,
     backend: 'cm6',
+    get _view() { return viewRef.current ?? undefined; },
     getValue: () => viewRef.current?.state.doc.toString() ?? '',
     setValue: (text) => {
       const view = viewRef.current;
