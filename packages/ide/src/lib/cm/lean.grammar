@@ -91,10 +91,34 @@ hashCmd<term> { @specialize[@name={term}]<HashIdent, term> }
 // === Tokens ===
 
 @tokens {
-  // Identifiers — letter (or _) then letters/digits/_/'/!/?.
-  // Greek + math letters that show up routinely in Lean code.
+  // Identifiers — letter (or _) then letters/digits/_/'/!/?, with optional
+  // dotted continuation for qualified names (Foo.Bar.baz). Lean's lexer
+  // treats Foo.Bar.baz as a single ident; we match that for accuracy.
+  //
+  // Unicode coverage:
+  //  - Greek lowercase α-ω, uppercase Α-Ω
+  //  - Math double-struck letter symbols (ℕ, ℤ, ℚ, ℝ, ℂ, ...)
+  //  - Subscript digits ₀-₉ and letters (Lean idents like `a₁`, `x₂`)
+  //  - Superscript digits and a few common letters (uses in Lean idents)
+  //  - Mathematical Alphanumeric Symbols (𝓕, 𝐞, etc., U+1D400-U+1D7FF)
   Identifier {
-    $[a-zA-Z_α-ωΑ-Ωℕℤℚℝℂ] $[a-zA-Z0-9_'!?α-ωΑ-Ωℕℤℚℝℂ]*
+    identSeg ("." identSeg)*
+  }
+  identSeg {
+    identStart identCont*
+  }
+  identStart {
+    $[a-zA-Z_]
+    | $[α-ωΑ-Ω]
+    | $[ℕℤℚℝℂℙℍ𝔸𝔹𝔻𝔼𝔽𝔾𝕀𝕁𝕂𝕃𝕄𝕆𝕊𝕋𝕌𝕍𝕎𝕏𝕐]
+    | $[\u{1D400}-\u{1D7FF}]
+  }
+  identCont {
+    $[a-zA-Z0-9_'!?]
+    | $[α-ωΑ-Ω]
+    | $[ℕℤℚℝℂℙℍ]
+    | $[\u{2070}-\u{209F}]
+    | $[\u{1D400}-\u{1D7FF}]
   }
 
   HashIdent { "#" $[a-zA-Z_]+ "!"? }
