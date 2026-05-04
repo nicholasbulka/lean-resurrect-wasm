@@ -6,22 +6,12 @@ Running diff on 166 files in /Users/nicholasbulka/prog/lean/liCriterionLean4Web/
   "errors": 0,
   "totalBytes": 5698827,
   "leanCovPct": "11.1",
-  "lezerCovPct": "77.1",
-  "overallAccuracyPct": "99.88",
+  "lezerCovPct": "77.4",
+  "overallAccuracyPct": "99.99",
   "totalConfusion": {
-    "comment→ident": 200,
-    "comment→-": 181,
-    "comment→punct": 124,
-    "ident→comment": 62,
-    "comment→keyword": 46,
     "ident→keyword": 45,
     "ident→other": 31,
-    "comment→number": 30,
-    "number→comment": 18,
-    "keyword→comment": 12
+    "punct→other": 11,
+    "punct→ident": 6
   }
 }
-
-=== WORST 10 FILES (acc < 99%) ===
-{"file":"PrimeNumberTheoremAnd/PrimeNumberTheoremAnd/Tactic/AdditiveCombination.lean","acc":"88.73","scored":5235,"top":[["comment→ident",200],["comment→-",181],["comment→punct",124]]}
-{"file":"PrimeNumberTheoremAnd/PrimeNumberTheoremAnd/ZetaSummary.lean","acc":"94.50","scored":1765,"top":[["ident→comment",62],["number→comment",18],["keyword→comment",12]]}

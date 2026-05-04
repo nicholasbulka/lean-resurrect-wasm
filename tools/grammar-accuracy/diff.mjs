@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // Resolve from packages/ide's node_modules — no separate install needed.
 import { buildParser } from '../../packages/ide/node_modules/@lezer/generator/dist/index.js';
+import { ExternalTokenizer } from '../../packages/ide/node_modules/@lezer/lr/dist/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
@@ -23,7 +24,38 @@ const LEAN_DUMP = join(__dirname, 'dump-tokens.lean');
 // === Lezer setup ===
 
 const grammarSrc = readFileSync(GRAMMAR_PATH, 'utf8');
-const parser = buildParser(grammarSrc);
+
+// Mirror of packages/ide/src/lib/cm/lean.tokens.js — same logic, but term
+// IDs come in via `terms` arg (the Vite plugin would normally inject them
+// via a virtual ./lean.grammar.terms import).
+function makeBlockCommentTokenizer(terms) {
+  const SLASH = 47, DASH = 45, BANG = 33;
+  const { BlockComment, DocBlockComment, ModuleDocComment } = terms;
+  return new ExternalTokenizer((input) => {
+    if (input.next !== SLASH) return;
+    if (input.peek(1) !== DASH) return;
+    let token, prefixLen;
+    const after = input.peek(2);
+    if (after === BANG) { token = ModuleDocComment; prefixLen = 3; }
+    else if (after === DASH) { token = DocBlockComment; prefixLen = 3; }
+    else { token = BlockComment; prefixLen = 2; }
+    for (let i = 0; i < prefixLen; i++) input.advance();
+    let depth = 1;
+    while (depth > 0 && input.next >= 0) {
+      if (input.next === SLASH && input.peek(1) === DASH) { depth++; input.advance(); input.advance(); }
+      else if (input.next === DASH && input.peek(1) === SLASH) { depth--; input.advance(); input.advance(); }
+      else input.advance();
+    }
+    input.acceptToken(token);
+  });
+}
+
+const parser = buildParser(grammarSrc, {
+  externalTokenizer: (name, terms) => {
+    if (name === 'blockComment') return makeBlockCommentTokenizer(terms);
+    throw new Error('unknown external tokenizer: ' + name);
+  },
+});
 
 // === Categories: a small shared vocabulary across both sides ===
 
@@ -108,6 +140,7 @@ function normalizeLezer(name) {
       return CAT.COMMENT;
     case 'Operator':
     case 'Punct':
+    case 'SinglePunct':
       return CAT.PUNCT;
     case 'Other': return CAT.OTHER;
     default: return null;  // wrapper nodes (declarationKeyword, etc.) — skip

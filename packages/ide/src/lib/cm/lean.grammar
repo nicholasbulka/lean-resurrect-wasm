@@ -32,6 +32,7 @@ item {
   CharLit |
   Operator |
   Punct |
+  SinglePunct |
   Other
 }
 
@@ -90,6 +91,14 @@ hashCmd<term> { @specialize[@name={term}]<HashIdent, term> }
 
 // === Tokens ===
 
+// External tokenizer declared FIRST so Lezer iterates it before the regex
+// TokenGroup. Once a tokenizer (without `extend`) matches at a position,
+// the loop in @lezer/lr's getActions breaks; later tokenizers never run.
+// Order in the grammar file maps to order in parser.tokenizers.
+@external tokens blockComment from "./lean.tokens.js" {
+  BlockComment, DocBlockComment, ModuleDocComment
+}
+
 @tokens {
   // Identifiers — letter (or _) then letters/digits/_/'/!/?, with optional
   // dotted continuation for qualified names (Foo.Bar.baz). Lean's lexer
@@ -125,14 +134,9 @@ hashCmd<term> { @specialize[@name={term}]<HashIdent, term> }
 
   LineComment { "--" ![\n]* }
 
-  // Block comments via regex. Non-nesting (see header note).
-  // Order in @precedence below is what disambiguates these three forms:
-  // ModuleDoc (/-!) > DocBlock (/--) > Block (/-).
-  ModuleDocComment { "/-!" blockBody "-/" }
-  DocBlockComment  { "/--" blockBody "-/" }
-  BlockComment     { "/-"  blockBody "-/" }
-  // Body of a block comment: any char except a `-` that begins `-/`.
-  blockBody { (![\-] | "-" ![/])* }
+  // Block comment forms (BlockComment, DocBlockComment, ModuleDocComment)
+  // are emitted by the external tokenizer below — they nest, which a regex
+  // tokenizer can't model.
 
   Number {
     "0" $[xX] $[0-9a-fA-F_]+ |
@@ -154,9 +158,15 @@ hashCmd<term> { @specialize[@name={term}]<HashIdent, term> }
     $[+*%<>=!&|^~?:]+
   }
 
+  // Note: '/' and '-' are NOT in this class. They live unmatched in the
+  // regex tokenizer so the external tokenizer (declared below) gets first
+  // crack at /- and -- sequences. Bare '/' or '-' fall to SinglePunct.
   Punct {
-    $[(){}\[\];,@./\-\\`] | "⟨" | "⟩" | "⦃" | "⦄" | "«" | "»" | "_"
+    $[(){}\[\];,@.\\`] | "⟨" | "⟩" | "⦃" | "⦄" | "«" | "»" | "_"
   }
+  // SinglePunct catches any '/' or '-' that the external tokenizer (block
+  // comments) and the LineComment regex (--) didn't consume.
+  SinglePunct { $[/\-] }
 
   whitespace { $[ \t\r\n]+ }
 
@@ -168,10 +178,9 @@ hashCmd<term> { @specialize[@name={term}]<HashIdent, term> }
 
   @precedence {
     LineComment,
-    ModuleDocComment, DocBlockComment, BlockComment,
     StringLit, CharLit,
     Number, HashIdent, Identifier,
-    Operator, Punct, Other
+    Operator, Punct, SinglePunct, Other
   }
 }
 
