@@ -1,92 +1,154 @@
-# Phase 11 spike — RESULT: LSP-via-WASM works
+# Phase 11 spike — RESULT: LSP-via-WASM (one-shot YES, continuous NO)
 
 Date: 2026-05-04
-Toolchain: Lean v4.27.0 MT=ON, Node WASM, no patches.
+Toolchain: Lean v4.27.0 MT=ON, Node WASM, no Lean patches.
 
-## Outcome
+## TL;DR
 
-**`lean --server` boots inside our existing Node WASM and responds to a
-fully-formed LSP `initialize` request.** The response includes the entire
-Lean LSP capability surface: hover, goto-def, completion, rename, semantic
-tokens, inlay hints, code actions, document symbols, folding, references,
-declaration, signature help, call hierarchy, color provider.
+`lean --server` boots inside our existing Node WASM and **handles a
+single LSP request perfectly**. Continuous LSP interaction (sustained
+request/response over the lifetime of an IDE session) is **structurally
+blocked** without rebuilding Lean WASM with Asyncify.
 
-This is the same WASM binary used for one-shot compile today
-(`vendor/lean-linux_wasm32/bin/lean.{js,wasm}`). No rebuild was required.
+The block is not a missing config or wiring — it's a fundamental
+mismatch between Emscripten's synchronous `Module.stdin` API and the
+pattern of "block waiting for the next LSP frame." Three independent
+paths all confirm the same wall.
 
-## How
+## What works (Spike 1 — `spike.cjs`)
 
-`spike.cjs`:
+Pre-queue the `initialize` LSP frame into a JS-side stdin queue, then
+`callMain(['--server'])`. Lean reads the queued bytes, processes
+`initialize`, writes a full LSP response. Confirms:
 
-1. Sets `Module.stdin` / `Module.stdout` / `Module.stderr` to byte-level
-   queue functions (Emscripten's documented hook for byte-level I/O).
-2. Pre-queues the `initialize` LSP frame into `stdinQueue` BEFORE calling
-   `Module.callMain(['--server'])`.
-3. Calls `callMain(['--server'])` — async-returning under PROXY_TO_PTHREAD.
-4. Polls `stdoutBytes` for `Content-Length:`-framed LSP responses.
+- `lean --server` is in the binary
+- Module.stdin / Module.stdout work as documented
+- LSP framing is stable through Module.print byte capture
+- Lean returns its full capability surface (hover, goto-def, completion,
+  semantic tokens, inlay hints, code actions, rename, document symbols,
+  folding)
 
-The pre-queue is what made it work. Without it, Lean's LSP boots, calls
-`read(0)`, gets `null` from `Module.stdin` (because the queue is empty
-at that instant), interprets the null as EOF, and exits with stderr:
+This proves *the LSP is real*. It does NOT prove that *continuous
+interaction* is possible.
 
-    Watchdog error: Cannot read LSP request: Stream was closed
+## What doesn't work (Spike 2a, 2b — both blocked)
 
-With the initialize frame pre-queued, the first stdin read drains the
-frame, Lean processes it, and writes the response to stdout. ✓
+### Attempt A: `Module.stdin` with `Atomics.wait` on a SharedArrayBuffer ring buffer (`spike-continuous.cjs`)
 
-## What this proves
+Hypothesis: `Atomics.wait` would block when the queue is empty,
+unblock when the producer pushes bytes + `Atomics.notify`. The pthread
+running Lean would wait, the main thread would push bytes
+asynchronously.
 
-- The historical block (`warm_worker_spike.md`: "LSP-based worker blocked
-  by libuv stdin-pipe stub under Emscripten") is bypassable via Emscripten
-  Module hooks. We never used libuv's stdin pipe; we used `Module.stdin`.
-- LSP-via-WASM is engineering work, not a research project.
-- No patches to Lean were required — current v4.27 binary works.
+**Result**: stalls forever after `callMain(['--server'])`. The
+diagnostic (`diag-stdin.cjs`) confirmed why: **`Module.stdin` runs on
+the MAIN thread**, not the pthread. Even though Lean's `--server` loop
+runs on the pthread under PROXY_TO_PTHREAD, Emscripten **proxies FS
+syscalls back to the main thread**. Our Atomics.wait there freezes the
+event loop, blocking exactly the async tasks that would push bytes.
 
-## Remaining gap (the real Phase 11 work)
+`worker_threads.isMainThread === true` confirmed during Module.stdin
+invocation: `[diag] Module.stdin call #1 from MAIN`.
 
-The synchronous `Module.stdin` returns `null` to indicate EOF, with no
-"would block" sentinel. So *continuous* LSP interaction (where the IDE
-sends `didChange`, hover, completion, etc. over the lifetime of the
-session) requires Lean's stdin reader to BLOCK when no data is available
-— not return EOF.
+### Attempt B: Subprocess + Unix pipes (`spike-subprocess.cjs` + `lsp-runner.cjs`)
 
-JS's single-threaded model can't synchronously block. But the pthread
-Lean runs on under PROXY_TO_PTHREAD is a real Worker Thread that *can*
-block via `Atomics.wait`. The canonical pattern:
+Hypothesis: spawn `node lsp-runner.cjs` as a child process, talk to it
+via real Unix pipes (`stdio: ['pipe', 'pipe', 'pipe']`). Emscripten's
+default Node stdin handling reads from `process.stdin`; the OS handles
+blocking I/O for free.
 
-- `SharedArrayBuffer` with `[Int32Array(counter), Uint8Array(circular buf)]`
-- pthread-side `Module.stdin`:
-    if `Atomics.load(counter, 0) === 0`, `Atomics.wait(counter, 0, 0)`
-    read next byte from circular buf, decrement counter, return it
-- main-side `sendBytes(buf)`:
-    copy bytes into circular buf
-    `Atomics.add(counter, 0, buf.length)`
-    `Atomics.notify(counter, 0)`
+**Result**: child reports `Watchdog error: Cannot read LSP request:
+hardware fault (error code: 29)`. Error 29 is `ESPIPE` — illegal seek
+on a pipe. This is the **libuv stdin pipe stub under Emscripten**
+documented in `warm_worker_spike.md`. Lean's libuv-backed I/O cannot
+read from a real pipe in our Emscripten build; the syscall translation
+is incomplete.
 
-That makes WASM-side stdin truly blocking from Lean's POV while the JS
-host stays asynchronous. Standard pattern; well-supported in Node Worker
-threads (and in browser Web Workers with COOP/COEP, which we already
-have configured per the static server).
+## Why these two failures are the same problem
 
-## Phase 11 plan (validated)
+Both paths need *blocking-aware I/O between asynchronous host and
+synchronous WASM*. Emscripten's options are:
 
-1. Implement SharedArrayBuffer + Atomics.wait stdin queue (Module.stdin
-   on pthread side, sender API on main side). ~150 lines.
-2. Build a session manager: spawn one Lean LSP instance per IDE session,
-   route LSP messages bidirectionally. WebSocket endpoint
-   `/api/lsp` between IDE and server is the natural bridge.
-3. LSP client in the IDE — minimal initial features (hover, goto-def,
-   semantic tokens, document symbols). Each is a single LSP request type
-   with a known response shape; the wiring is mechanical once the
-   transport works.
-4. On-demand semantics commitment (per memory): no `didChange` per
-   keystroke; trigger on explicit user actions.
+1. **Synchronous Module.stdin** — works, but cannot block on main
+   thread without freezing event loop. (Spike 2a fails here.)
+2. **libuv stdin pipe** — would handle blocking natively if it
+   worked, but it's stubbed in Emscripten WASI/POSIX layer. (Spike 2b
+   fails here.)
+3. **Asyncify** — JS hooks can be async (return Promises); WASM
+   suspends and resumes when the Promise resolves. *Designed for
+   exactly this use case.* Requires Lean WASM to be **rebuilt** with
+   `-sASYNCIFY=1 -sASYNCIFY_IMPORTS=[...]`.
 
-## Repro
+There's no combination of (1) + (2) that gives us continuous LSP. We
+need (3).
 
-    cd /Users/nicholasbulka/prog/lean/wasm
-    node --max-old-space-size=10240 tools/lsp-spike/spike.cjs
+## Cost of the proper fix (Asyncify rebuild)
 
-Expected: `[spike] ✓ SUCCESS — initialize response received.`
-Cold-start time on Apple Silicon: ~6s for runtime init, ~few hundred ms
-to receive the initialize response after callMain.
+- Rebuild Lean v4.27 WASM with `-sASYNCIFY=1`. Settings tuned. `~21min
+  hot rebuild` per memory `v427_wasm_build_recipe`.
+- ASYNCIFY interacts non-trivially with PTHREAD support. Per Emscripten
+  issue tracker, combining the two has historically required care
+  around thread-local state. Some users report needing
+  `-sASYNCIFY_ADVISE` to find blocking imports, plus careful thread
+  synchronization. May require multiple iterations to stabilize.
+- Once stable: `Module.stdin` returns a Promise; Lean's read syscall
+  suspends until resolved. Continuous LSP works. Hover works,
+  goto-def works, etc.
+
+Realistic: 2-4 hot-rebuild iterations + Lean smoke tests.
+**1-3 days of focused work** to get a clean ASYNCIFY+PTHREAD build
+running `--server` with continuous I/O.
+
+## Pragmatic alternative (pseudo-LSP via per-request spawn)
+
+Without Asyncify rebuild, the only available pattern is
+**spawn-per-request with pre-queued frames**:
+
+- Each LSP query (hover, completion, etc.) spawns a fresh Lean WASM
+- Pre-queue: `initialize` + `initialized` + `didOpen` + the actual
+  request
+- Read all responses
+- Kill the process
+
+Cold-start ~6s for runtime + ~5-30s for Lean LSP boot + olean load,
+depending on imports. Per-hover latency: 10-40 seconds.
+
+This is too slow for interactive hover but technically delivers the
+LSP semantic data. Could work as "explicit LSP query button" UX
+("Inspect this expression") rather than mouse-hover. Limited but
+functional for exploratory work.
+
+## What's preserved in this directory
+
+- `spike.cjs` — original one-shot success (initialize via pre-queue)
+- `RESULTS.md` — this file
+- `spike-continuous.cjs` — Spike 2a (SAB + Atomics.wait), STALLS
+- `diag-stdin.cjs` — diagnostic that confirmed Module.stdin on main
+  thread (single line of output: `from MAIN`)
+- `lsp-runner.cjs` — child process for subprocess approach
+- `spike-subprocess.cjs` — Spike 2b (subprocess + pipes), FAILS with
+  ESPIPE
+
+All four scripts are reproducible (`node tools/lsp-spike/<script>.cjs`).
+
+## Recommendation
+
+**Do not invest in Phase 11 (continuous LSP) without first investing
+in an Asyncify rebuild.** The architectural block is real, not a
+configuration issue.
+
+Two reasonable paths from here:
+
+- **Asyncify rebuild track**: Phase 11.0 becomes the rebuild itself;
+  Phase 11.1 onward proceeds against the new binary with the original
+  plan (SAB or async Module.stdin). Days of WASM build work; high
+  payoff.
+- **Pause Phase 11**: keep building everything that doesn't need
+  continuous LSP — e.g., Phase 9b (Lean import dependency graph in
+  Sigma), polish of the existing IDE features. Re-engage with LSP
+  when there's appetite for the rebuild.
+
+The key insight: **the current Lean WASM binary works for our existing
+"compile button" model. Continuous LSP is a different category of
+runtime requirement** that needs Asyncify-or-equivalent. Knowing this
+now saves potentially weeks of working around it the wrong way.
