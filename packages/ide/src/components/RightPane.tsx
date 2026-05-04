@@ -1,9 +1,10 @@
-import Editor from '@monaco-editor/react';
+import { basicSetup } from 'codemirror';
 import { useAppDispatch, useAppSelector } from '../store';
 import { setRightPane } from '../slices/uiSlice';
 import { updateMermaid } from '../slices/proofsSlice';
 import { Mermaid } from './Mermaid';
 import { Diagnostics } from './Diagnostics';
+import { CodeMirror } from '../lib/cm/CodeMirror';
 
 export function RightPane() {
   const dispatch = useAppDispatch();
@@ -104,19 +105,13 @@ function DesignView({ source, onChange, proofId }: DesignProps) {
         <Mermaid source={source} idPrefix={`diag-${proofId}`} />
       </div>
       <div className="design-source">
-        <Editor
-          height="100%"
-          language="markdown"
-          theme="vs"
-          value={source}
-          onChange={(v) => onChange(v ?? '')}
-          options={{
-            fontSize: 12,
-            minimap: { enabled: false },
-            wordWrap: 'on',
-            automaticLayout: true,
-            scrollBeyondLastLine: false,
-          }}
+        {/* key={proofId}: remount when the active proof changes so the
+            uncontrolled editor picks up the new mermaid source. */}
+        <CodeMirror
+          key={proofId}
+          initialValue={source}
+          onChange={onChange}
+          extensions={[basicSetup]}
         />
       </div>
     </div>

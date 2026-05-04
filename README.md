@@ -1,8 +1,10 @@
 # lean-wasm
 
 Lean 4.27.0 elaborator running entirely in the browser via WebAssembly,
-multithreaded, no server compile required. End-to-end Monaco IDE that
-serves as static files: HTML + JS + WASM + olean blobs only.
+multithreaded, no server compile required. End-to-end CodeMirror 6 IDE
+with a custom Lezer Lean grammar (~99.99% per-byte agreement with Lean's
+own parser on real Mathlib-using code), served as static files: HTML +
+JS + WASM + olean blobs only.
 
 `def x : Nat := 42` followed by `#eval x` returns `42` from a Web
 Worker-hosted `lean_main` running Lean v4.27, with the full Init/Std/Lean
@@ -41,11 +43,11 @@ stdlib reachable in MEMFS. Test suite: 20 passed / 4 skipped / 0 failed.
 │   └── stage1/bin/lean.{js,wasm}    ← raw build outputs
 ├── src-overlay/               ← scratch space for browser-shell variants
 └── packages/
-    ├── ide/                   ← React 18 + Redux Toolkit + Monaco + Vite
+    ├── ide/                   ← React 18 + Redux Toolkit + CodeMirror 6 + Vite
     │   ├── src/
     │   │   ├── App.tsx        ← top-level layout
     │   │   ├── components/
-    │   │   │   ├── EditorPane.tsx       ← Monaco mount + diagnostic markers
+    │   │   │   ├── EditorPane.tsx       ← CM6 mount + Lezer grammar + diagnostic markers
     │   │   │   ├── ProofMenu.tsx        ← proof tabs, compile-mode toggle
     │   │   │   ├── RightPane.tsx        ← Output / Design tab switcher
     │   │   │   └── ArchitecturePage.tsx ← four Mermaid diagrams
@@ -110,7 +112,7 @@ cd packages/ide && npm install && npm run build && cd ../..
 cd packages/tests && npm install && node server.js   # :8787
 ```
 
-Open <http://localhost:8787> — Monaco loads, default compile mode is
+Open <http://localhost:8787> — CodeMirror loads, default compile mode is
 "browser (in-page WASM)", first compile triggers a one-time download
 of ~480 MB into the browser cache (lean.js 119 MB + lean.wasm 138 MB
 + ~226 MB Init oleans), subsequent compiles reuse the warm Worker.
@@ -244,7 +246,7 @@ real `_main` to one of the pthread Workers. The pthread runs
 JSON-formatted diagnostics to its `Module.print`, and exits.
 `Module.onExit` fires back on the outer Worker, the outer Worker
 collects buffered output and `postMessage`s the result back to the
-main thread, the IDE updates Redux state and Monaco markers.
+main thread, the IDE updates Redux state and CodeMirror lint markers.
 
 ### How `scripts/patch-leanjs.js` makes the build usable
 
@@ -291,7 +293,7 @@ The Playwright suite exercises both halves:
   expected JSON-formatted output. Includes a memory regression test
   that the peak HEAP8 stays under 3 GiB on a stdlib-heavy workload
   (currently peaks at ~1.5 GiB).
-- **Browser side** (`ide-*.spec.ts`) drives the full Monaco IDE
+- **Browser side** (`ide-*.spec.ts`) drives the full CodeMirror IDE
   through Playwright, exercising the proof menu, syntax
   highlighting, compile flow, diagnostic markers, cancel button, and
   BYOML editor. Server-mode compile is fully covered end-to-end.

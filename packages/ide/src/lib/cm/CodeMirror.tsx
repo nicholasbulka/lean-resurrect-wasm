@@ -11,11 +11,11 @@ interface Props {
 
 /**
  * Thin React wrapper over a CodeMirror 6 EditorView. Uncontrolled: pass
- * `initialValue` once at mount; updates flow out via `onChange`. To replace
- * the document programmatically, call `view.dispatch({ changes })` via the
- * `onView` callback or the test bridge — never re-render with a new
- * `initialValue` prop, the wrapper ignores it after mount on purpose
- * (matches the existing Monaco `defaultValue` pattern).
+ * `initialValue` once at mount; updates flow out via `onChange`. To
+ * replace the document programmatically, call view.dispatch({changes}) via
+ * the onView callback or the test bridge — never re-render with a new
+ * initialValue prop; the wrapper ignores it after mount on purpose. Use
+ * key={...} to force a remount when you want a fresh editor.
  */
 export function CodeMirror({ initialValue, onChange, extensions = [], onView }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);

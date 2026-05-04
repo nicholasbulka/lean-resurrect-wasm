@@ -4,10 +4,10 @@ const SYSTEM_DIAGRAM = `
 flowchart LR
   subgraph Browser["Browser tab (Chrome)"]
     React["React + Redux app<br/>packages/ide"]
-    Monaco["Monaco editor"]
+    Editor["CodeMirror 6 editor<br/>+ Lezer Lean grammar"]
     MermaidLib["Mermaid renderer"]
     Local["localStorage<br/>(proofs persisted)"]
-    React --- Monaco
+    React --- Editor
     React --- MermaidLib
     React --- Local
   end
@@ -43,7 +43,7 @@ sequenceDiagram
   participant S as Server
   participant H as Harness (Node)
   participant W as Lean WASM
-  U->>B: edit Lean in Monaco
+  U->>B: edit Lean in CodeMirror
   U->>B: ⌘↵ Compile
   B->>S: POST /api/compile { source }
   S->>S: write source to .compile-scratch/<id>/Input.lean

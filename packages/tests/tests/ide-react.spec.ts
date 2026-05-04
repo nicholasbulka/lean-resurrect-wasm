@@ -118,15 +118,11 @@ test.describe('React IDE', () => {
   test('Lean syntax highlighting is active', async ({ page }) => {
     await page.goto(IDE_URL);
     await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
-    // Backend-agnostic check: assert the editor renders highlighted token
-    // spans for the default Lean source. Monaco emits .view-line span span
-    // (class names mtk*); CM6 emits .cm-line span (class names ͼ-prefixed
-    // by default). Either flavor satisfies "syntax highlighting is on."
-    const backend = await page.evaluate(() => (window as any).__ideEditor?.backend);
-    const selector = backend === 'cm6'
-      ? '.cm-content .cm-line span'
-      : '.monaco-editor .view-line span span';
-    const tokenSpans = await page.locator(selector).count();
+    // CM6 emits highlighted token spans inside .cm-line under .cm-content;
+    // class names are ͼ-prefixed by the default highlight style. The exact
+    // class names aren't asserted here — only that some highlighted spans
+    // exist for the default Lean source.
+    const tokenSpans = await page.locator('.cm-content .cm-line span').count();
     expect(tokenSpans).toBeGreaterThan(0);
   });
 
