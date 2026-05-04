@@ -65,8 +65,8 @@ test.describe('React IDE', () => {
     // (see ide-compile-mode.spec.ts). Server mode is fully working.
     await page.locator('.compile-mode select').selectOption('server');
     await page.evaluate(() => (window as any).__ideEditor.setValue('#eval 1 + 1\n'));
-    // Wait until Monaco's content matches what we set (onChange fired) AND
-    // until the editor-wide re-render has settled.
+    // Wait until the editor's content matches what we set (onChange fired)
+    // AND the editor-wide re-render has settled.
     await page.waitForFunction(
       () => (window as any).__ideEditor.getValue().trim() === '#eval 1 + 1',
       null, { timeout: 5_000 }
@@ -107,7 +107,7 @@ test.describe('React IDE', () => {
     // Location badge shows 1:17.
     await expect(diag.locator('.loc')).toHaveText('1:17');
 
-    // Click the diag; cursor should jump to the referenced position in Monaco.
+    // Click the diag; cursor should jump to the referenced position.
     // Verify by reading back what the editor holds — the line should still be
     // visible and the click should not have altered content.
     await diag.locator('.diag-jump').click();
@@ -115,16 +115,18 @@ test.describe('React IDE', () => {
     expect(val).toContain('badname');
   });
 
-  test('Lean syntax highlighting is active (lean4 language registered)', async ({ page }) => {
+  test('Lean syntax highlighting is active', async ({ page }) => {
     await page.goto(IDE_URL);
     await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
-    const hasLean = await page.evaluate(() => {
-      const monaco = (window as any).__ideEditor?.monaco;
-      return !!monaco?.languages?.getLanguages?.().some((l: any) => l.id === 'lean4');
-    });
-    expect(hasLean).toBe(true);
-    // Monaco emits per-token spans (class names mtk*) for highlighted content.
-    const tokenSpans = await page.locator('.monaco-editor .view-line span span').count();
+    // Backend-agnostic check: assert the editor renders highlighted token
+    // spans for the default Lean source. Monaco emits .view-line span span
+    // (class names mtk*); CM6 emits .cm-line span (class names ͼ-prefixed
+    // by default). Either flavor satisfies "syntax highlighting is on."
+    const backend = await page.evaluate(() => (window as any).__ideEditor?.backend);
+    const selector = backend === 'cm6'
+      ? '.cm-content .cm-line span'
+      : '.monaco-editor .view-line span span';
+    const tokenSpans = await page.locator(selector).count();
     expect(tokenSpans).toBeGreaterThan(0);
   });
 
@@ -153,7 +155,7 @@ test.describe('React IDE', () => {
     await expect(page.getByRole('button', { name: /^compile/i })).toBeVisible();
   });
 
-  test('Monaco inline markers appear after a compile error', async ({ page }) => {
+  test('Inline diagnostic markers appear after a compile error', async ({ page }) => {
     test.setTimeout(5 * 60_000);
     await page.goto(IDE_URL);
     await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 20_000 });
