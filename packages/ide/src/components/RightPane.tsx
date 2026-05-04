@@ -1,7 +1,7 @@
 import { basicSetup } from 'codemirror';
 import { useAppDispatch, useAppSelector } from '../store';
 import { setRightPane } from '../slices/uiSlice';
-import { updateMermaid } from '../slices/proofsSlice';
+import { updateMermaid } from '../slices/projectsSlice';
 import { Mermaid } from './Mermaid';
 import { Diagnostics } from './Diagnostics';
 import { CodeMirror } from '../lib/cm/CodeMirror';
@@ -9,12 +9,12 @@ import { GraphView } from './GraphView';
 
 export function RightPane() {
   const dispatch = useAppDispatch();
-  const currentId = useAppSelector((s) => s.proofs.currentId);
-  const proof = useAppSelector((s) => (currentId ? s.proofs.entities[currentId] : null));
+  const projectId = useAppSelector((s) => s.projects.currentId);
+  const project = useAppSelector((s) => (projectId ? s.projects.entities[projectId] : null));
   const rightPane = useAppSelector((s) => s.ui.rightPane);
   const compile = useAppSelector((s) => s.compile);
 
-  if (!proof) return <div className="pane"><div className="pane-body" /></div>;
+  if (!project) return <div className="pane"><div className="pane-body" /></div>;
 
   const statusClass = compile.status === 'ok' ? 'ok' : compile.status === 'error' ? 'fail' : compile.status === 'running' ? 'running' : '';
   const progressText = compile.progress
@@ -67,9 +67,9 @@ export function RightPane() {
         )}
         {rightPane === 'design' && (
           <DesignView
-            source={proof.mermaidSource}
-            onChange={(s) => dispatch(updateMermaid({ id: proof.id, source: s }))}
-            proofId={proof.id}
+            source={project.mermaidSource}
+            onChange={(s) => dispatch(updateMermaid({ id: project.id, source: s }))}
+            projectId={project.id}
           />
         )}
         {rightPane === 'graph' && <GraphView />}
@@ -104,19 +104,19 @@ function OutputView() {
 interface DesignProps {
   source: string;
   onChange: (s: string) => void;
-  proofId: string;
+  projectId: string;
 }
-function DesignView({ source, onChange, proofId }: DesignProps) {
+function DesignView({ source, onChange, projectId }: DesignProps) {
   return (
     <div className="design">
       <div className="design-preview">
-        <Mermaid source={source} idPrefix={`diag-${proofId}`} />
+        <Mermaid source={source} idPrefix={`diag-${projectId}`} />
       </div>
       <div className="design-source">
-        {/* key={proofId}: remount when the active proof changes so the
+        {/* key={projectId}: remount when the active project changes so the
             uncontrolled editor picks up the new mermaid source. */}
         <CodeMirror
-          key={proofId}
+          key={projectId}
           initialValue={source}
           onChange={onChange}
           extensions={[basicSetup]}

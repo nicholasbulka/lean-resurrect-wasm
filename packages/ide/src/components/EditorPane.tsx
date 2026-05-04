@@ -3,7 +3,7 @@ import { basicSetup } from 'codemirror';
 import { keymap } from '@codemirror/view';
 import type { EditorView } from '@codemirror/view';
 import { useAppDispatch, useAppSelector } from '../store';
-import { updateLean } from '../slices/proofsSlice';
+import { updateFileContent } from '../slices/projectsSlice';
 import { compileSource, cancelCurrentCompile } from '../slices/compileSlice';
 import { LibraryPaths } from './LibraryPaths';
 import { createCm6Bridge } from '../lib/editorBridge';
@@ -13,26 +13,28 @@ import { setLeanDiagnostics } from '../lib/cm/leanDiagnostics';
 
 export function EditorPane() {
   const dispatch = useAppDispatch();
-  const currentId = useAppSelector((s) => s.proofs.currentId);
-  const proof = useAppSelector((s) => (currentId ? s.proofs.entities[currentId] : null));
+  const projectId = useAppSelector((s) => s.projects.currentId);
+  const project = useAppSelector((s) => (projectId ? s.projects.entities[projectId] : null));
+  const filePath = project?.currentPath ?? null;
+  const file = filePath && project ? project.files[filePath] : null;
   const status = useAppSelector((s) => s.compile.status);
   const compileMode = useAppSelector((s) => s.ui.compileMode);
   const cmViewRef = useRef<EditorView | null>(null);
   const [ready, setReady] = useState(false);
   const diagnostics = useAppSelector((s) => s.compile.result?.diagnostics ?? []);
 
-  // runCompile captures live `proof`/`status`/`compileMode`. The CM6 keymap
-  // closure is created once at mount, so it must read through a ref to see
-  // the latest function.
+  // runCompile captures live project/file/status/compileMode. The CM6
+  // keymap closure is created once at mount, so it must read through a ref
+  // to see the latest function.
   const runCompileRef = useRef<() => void>(() => {});
 
-  if (!proof) return <div className="pane"><div className="pane-body" /></div>;
+  if (!project || !file) return <div className="pane"><div className="pane-body" /></div>;
 
   async function runCompile() {
-    if (!proof || status === 'running') return;
+    if (!project || !file || status === 'running') return;
     await dispatch(compileSource({
-      source: proof.leanSource,
-      libraryPaths: proof.libraryPaths,
+      source: file.content,
+      libraryPaths: project.libraryPaths,
       mode: compileMode,
     }));
   }
@@ -65,8 +67,8 @@ export function EditorPane() {
   return (
     <div className="pane">
       <div className="pane-header">
-        <strong>Lean</strong>
-        <span style={{ color: 'var(--text-muted)' }}>{proof.leanSource.length} chars</span>
+        <strong>{file.path}</strong>
+        <span style={{ color: 'var(--text-muted)' }}>{file.content.length} chars</span>
         <span style={{ flex: 1 }} />
         {status === 'running' ? (
           <button
@@ -93,12 +95,12 @@ export function EditorPane() {
       </div>
       <LibraryPaths />
       <div className="pane-body" style={{ padding: 0 }}>
-        {/* key per proof id: re-mount the editor when switching proofs, so
-            we can safely use uncontrolled mode. */}
+        {/* key={project.id}:{file.path}: re-mount the editor when switching
+            files or projects so we can safely use uncontrolled mode. */}
         <CodeMirror
-          key={proof.id}
-          initialValue={proof.leanSource}
-          onChange={(v) => dispatch(updateLean({ id: proof.id, source: v }))}
+          key={`${project.id}:${file.path}`}
+          initialValue={file.content}
+          onChange={(v) => dispatch(updateFileContent({ projectId: project.id, path: file.path, content: v }))}
           extensions={cmExtensions}
           onView={(view) => {
             cmViewRef.current = view;

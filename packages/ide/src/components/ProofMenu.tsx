@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../store';
-import { addProof, deleteProof, renameProof, selectProof } from '../slices/proofsSlice';
+import { addScratchProject, deleteProject, renameProject, selectProject } from '../slices/projectsSlice';
 import { setView, setCompileMode, type CompileMode } from '../slices/uiSlice';
 
 export function ProofMenu() {
   const dispatch = useAppDispatch();
-  const { entities, ids, currentId } = useAppSelector((s) => s.proofs);
+  const { entities, ids, currentId } = useAppSelector((s) => s.projects);
   const view = useAppSelector((s) => s.ui.view);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -15,7 +15,7 @@ export function ProofMenu() {
     setRenameDraft(entities[id]?.name ?? '');
   }
   function commitRename() {
-    if (renamingId) dispatch(renameProof({ id: renamingId, name: renameDraft.trim() }));
+    if (renamingId) dispatch(renameProject({ id: renamingId, name: renameDraft.trim() }));
     setRenamingId(null);
   }
 
@@ -41,7 +41,7 @@ export function ProofMenu() {
       <div style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
 
       {ids.map((id) => {
-        const proof = entities[id];
+        const project = entities[id];
         const isActive = id === currentId;
         if (renamingId === id) {
           return (
@@ -63,23 +63,23 @@ export function ProofMenu() {
           <button
             key={id}
             className={'tab' + (isActive ? ' active' : '')}
-            onClick={() => dispatch(selectProof(id))}
+            onClick={() => dispatch(selectProject(id))}
             onDoubleClick={() => startRename(id)}
-            title={proof.name + ' — double-click to rename'}
+            title={project.name + ' — double-click to rename'}
           >
-            {proof.name}
+            {project.name}
           </button>
         );
       })}
-      <button onClick={() => dispatch(addProof({}))} title="new proof">+</button>
+      <button onClick={() => dispatch(addScratchProject(undefined))} title="new project">+</button>
       {currentId && ids.length > 0 && (
         <button
           onClick={() => {
             if (confirm('delete "' + entities[currentId!].name + '"?')) {
-              dispatch(deleteProof(currentId!));
+              dispatch(deleteProject(currentId!));
             }
           }}
-          title="delete current proof"
+          title="delete current project"
         >
           −
         </button>

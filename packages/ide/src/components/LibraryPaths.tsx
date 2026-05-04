@@ -1,16 +1,16 @@
 import { useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../store';
-import { addLibraryPath, removeLibraryPath, updateLibraryPath } from '../slices/proofsSlice';
+import { addLibraryPath, removeLibraryPath, updateLibraryPath } from '../slices/projectsSlice';
 
 /**
- * BYOML: per-proof list of extra library roots. Passed to the compile
+ * BYOML: per-project list of extra library roots. Passed to the compile
  * endpoint as LEAN_EXTRA_PATH so the compiled-in install-prefix stdlib
  * stays intact while a user's own oleans are searched first.
  */
 export function LibraryPaths() {
   const dispatch = useAppDispatch();
-  const currentId = useAppSelector((s) => s.proofs.currentId);
-  const paths = useAppSelector((s) => (currentId ? s.proofs.entities[currentId]?.libraryPaths ?? [] : []));
+  const currentId = useAppSelector((s) => s.projects.currentId);
+  const paths = useAppSelector((s) => (currentId ? s.projects.entities[currentId]?.libraryPaths ?? [] : []));
   const [draft, setDraft] = useState('');
   if (!currentId) return null;
 

@@ -20,10 +20,10 @@ test.describe('React IDE', () => {
     await expect(page.getByRole('link', { name: 'Architecture' })).toBeVisible();
   });
 
-  test('new proof + rename workflow', async ({ page }) => {
+  test('new project + rename workflow', async ({ page }) => {
     await page.goto(IDE_URL);
-    // Add a new proof.
-    await page.locator('.menu button[title="new proof"]').click();
+    // Add a new project (in-IDE scratch project, no filesystem root).
+    await page.locator('.menu button[title="new project"]').click();
     // Should now be two tabs; the new one is active.
     const tabs = page.locator('.menu .tab');
     await expect(tabs).toHaveCount(2);
@@ -31,9 +31,9 @@ test.describe('React IDE', () => {
     // Rename it by double-clicking.
     await tabs.nth(1).dblclick();
     const rename = page.locator('.menu .inline-rename');
-    await rename.fill('my-proof');
+    await rename.fill('my-project');
     await rename.press('Enter');
-    await expect(page.locator('.menu .tab.active')).toContainText('my-proof');
+    await expect(page.locator('.menu .tab.active')).toContainText('my-project');
   });
 
   test('architecture page renders a mermaid diagram', async ({ page }) => {
