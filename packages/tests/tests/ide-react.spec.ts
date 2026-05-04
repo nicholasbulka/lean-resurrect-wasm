@@ -10,11 +10,12 @@ import { test, expect } from '@playwright/test';
 const IDE_URL = '/';
 
 test.describe('React IDE', () => {
-  test('menu renders with a default proof and Editor/Architecture links', async ({ page }) => {
+  test('menu renders with a default project and Editor/Architecture links', async ({ page }) => {
     await page.goto(IDE_URL);
-    await expect(page.getByRole('navigation', { name: 'proof menu' }).getByRole('heading', { name: 'Lean IDE' })).toBeVisible();
-    // One default proof ("scratch") is visible as a tab.
-    await expect(page.locator('.menu .tab.active')).toContainText('scratch');
+    await expect(page.getByRole('navigation', { name: 'project menu' }).getByRole('heading', { name: 'Lean IDE' })).toBeVisible();
+    // Default scratch project is the selected option in the project dropdown.
+    await expect(page.getByRole('combobox', { name: 'select project' })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'select project' })).toContainText('scratch');
     // Top-level view links.
     await expect(page.getByRole('link', { name: 'Editor' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Architecture' })).toBeVisible();
@@ -22,18 +23,17 @@ test.describe('React IDE', () => {
 
   test('new project + rename workflow', async ({ page }) => {
     await page.goto(IDE_URL);
-    // Add a new project (in-IDE scratch project, no filesystem root).
-    await page.locator('.menu button[title="new project"]').click();
-    // Should now be two tabs; the new one is active.
-    const tabs = page.locator('.menu .tab');
-    await expect(tabs).toHaveCount(2);
-    await expect(tabs.nth(1)).toHaveClass(/active/);
-    // Rename it by double-clicking.
-    await tabs.nth(1).dblclick();
-    const rename = page.locator('.menu .inline-rename');
+    const select = page.getByRole('combobox', { name: 'select project' });
+    // Click "+ new" to add a scratch project; it becomes active.
+    await page.getByRole('button', { name: /^\+ new$/ }).click();
+    // Two options now in the dropdown.
+    await expect(select.locator('option')).toHaveCount(2);
+    // Rename via the rename button → input → Enter.
+    await page.getByRole('button', { name: /^✎ rename$/ }).click();
+    const rename = page.locator('.menu .project-rename');
     await rename.fill('my-project');
     await rename.press('Enter');
-    await expect(page.locator('.menu .tab.active')).toContainText('my-project');
+    await expect(select).toContainText('my-project');
   });
 
   test('architecture page renders a mermaid diagram', async ({ page }) => {

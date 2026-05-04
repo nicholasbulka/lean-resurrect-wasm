@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { useAppDispatch, useAppSelector } from './store';
 import { tickElapsed } from './slices/compileSlice';
-import { ProofMenu } from './components/ProofMenu';
+import { ProjectMenu } from './components/ProjectMenu';
+import { FileTree } from './components/FileTree';
 import { EditorPane } from './components/EditorPane';
 import { RightPane } from './components/RightPane';
 import { ArchitecturePage } from './components/ArchitecturePage';
@@ -20,9 +21,10 @@ export function App() {
 
   return (
     <div className="app">
-      <ProofMenu />
+      <ProjectMenu />
       {view === 'editor' ? (
         <div className="workspace">
+          <FileTree />
           <EditorPane />
           <RightPane />
         </div>

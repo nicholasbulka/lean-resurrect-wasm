@@ -44,8 +44,67 @@ body { font: 14px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; color: #
 .menu a:hover { background: var(--accent-bg); }
 .menu a.active { background: var(--accent-bg); }
 
+/* Project select / rename */
+.menu .project-select {
+  padding: 4px 8px;
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: white;
+  max-width: 360px;
+}
+.menu .project-rename {
+  padding: 4px 8px;
+  font: inherit;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: white;
+  width: 220px;
+}
+
 /* Workspace */
-.workspace { display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+.workspace { display: grid; grid-template-columns: 240px 1fr 1fr; min-height: 0; }
+
+/* File tree sidebar */
+.sidebar {
+  display: flex; flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg-pane);
+  min-width: 0; min-height: 0;
+}
+.sidebar-empty { padding: 12px; color: var(--text-muted); font-size: 12px; }
+.sidebar-header {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12px;
+}
+.sidebar-title { font-weight: 600; color: #222; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-count { color: var(--text-muted); font-size: 11px; }
+.sidebar-tree {
+  flex: 1; overflow: auto;
+  padding: 4px 0;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, monospace;
+}
+.sidebar-tree button {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  padding: 2px 8px;
+  display: flex; align-items: center; gap: 4px;
+  white-space: nowrap;
+}
+.sidebar-tree button:hover { background: var(--accent-bg); }
+.sidebar-tree .ft-dir { color: #444; }
+.sidebar-tree .ft-file { color: #222; }
+.sidebar-tree .ft-file.active { background: var(--accent-bg); font-weight: 600; }
+.sidebar-tree .ft-chev { color: var(--text-muted); width: 10px; display: inline-block; }
+.sidebar-tree .ft-name { overflow: hidden; text-overflow: ellipsis; }
 .pane { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
 .pane:last-child { border-right: none; }
 
