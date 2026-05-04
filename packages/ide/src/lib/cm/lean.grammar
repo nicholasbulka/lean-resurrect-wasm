@@ -1,30 +1,69 @@
-// Coarse Lezer grammar for Lean 4.27. Phase 3b: token surface + top-level
-// keyword classification. No structural enclosure of declarations yet —
-// that lands in 3c (body absorption). styleTags in 3d.
+// Coarse Lezer grammar for Lean 4.27.
 //
 // Reference: docs/lean4-reference/grammar-reference-v4.27.md
 // Vendored source: vendor/lean4-src/src/Lean/Parser/Command.lean
 //
-// Known limitation in this phase: block comments (/- ... -/) are matched
-// by regex and DO NOT nest. Real Lean supports nested block comments. An
-// external tokenizer was attempted but Lezer's `extend` option only fires
-// at EOF in our setup. Revisit if the corpus surfaces a nested-comment
-// case that misparses.
+// Phase 3c: structural enclosure of declarations. Each top-level command
+// (Declaration, NamespaceCmd, NotationCmd, MetaCmd, HashCmd) wraps its
+// keyword + body. Body absorbs token-level content until the next
+// top-level start keyword — giving fold extents and outline anchor
+// points to later phases (3e, 3g) without trying to parse expressions.
 
-@top File { item* }
+@top File { topItem* }
 
-item {
+topItem {
   LineComment |
   ModuleDocComment |
   DocBlockComment |
   BlockComment |
-  declarationKeyword |
+  Declaration |
+  NamespaceCmd |
+  NotationCmd |
+  MetaCmd |
+  HashCmd
+}
+
+// === Top-level command shapes ===
+// Each command consumes its starting keyword(s) and absorbs body tokens
+// until the next top-level start. Modifier keywords precede a Declaration
+// and are part of it.
+
+Declaration {
+  modifierKeyword* declarationKeyword bodyToken*
+}
+
+NamespaceCmd {
+  namespaceKeyword bodyToken*
+}
+
+NotationCmd {
+  notationKeyword bodyToken*
+}
+
+MetaCmd {
+  metaKeyword bodyToken*
+}
+
+HashCmd {
+  hashCommand bodyToken*
+}
+
+// === Body tokens ===
+// Any token that does NOT begin a new top-level item. This is the
+// terminator-by-exclusion approach — it relies on declaration / modifier
+// / namespace / notation / meta / hashCommand keywords being reserved
+// (i.e., the parser never produces them mid-expression). In real Lean
+// they ARE reserved, so this works for top-level structure.
+
+// Comments NOT included here: shift/reduce ambiguity with comment as a
+// top-level item. Practically: a comment inside a declaration body will
+// close the body and start a new top-level item. Tokenization is still
+// correct (the comment is recognized as such); structural ranges
+// (Declaration nodes) are slightly conservative — fold extents in 3e
+// will stop at the comment. Acceptable trade-off for 3c; revisit with
+// @precedence if it bites.
+bodyToken {
   controlKeyword |
-  modifierKeyword |
-  namespaceKeyword |
-  notationKeyword |
-  metaKeyword |
-  hashCommand |
   Identifier |
   HashIdent |
   Number |
