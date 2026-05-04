@@ -226,9 +226,94 @@ async function handleCompile(req, res) {
   res.end(body);
 }
 
+// POST /api/project/scan
+//   body:  { root: string }
+//   reply: { name, root, files: [{ path: relativePath, content: string }] }
+//
+// Safety: this is a local-dev server, but we still require absolute paths
+// and reject obvious traversal attempts. There's no allowlist beyond
+// "must be an absolute path that exists and is a directory" — for a
+// shared/remote deployment, gate this behind explicit roots.
+async function handleProjectScan(req, res) {
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'text/plain' });
+    res.end('POST only');
+    return;
+  }
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch (_) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('invalid JSON body');
+    return;
+  }
+  const root = String(parsed.root ?? '');
+  if (!root || !path.isAbsolute(root)) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('root must be an absolute path');
+    return;
+  }
+  let st;
+  try { st = fs.statSync(root); } catch (_) {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('no such directory');
+    return;
+  }
+  if (!st.isDirectory()) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('root is not a directory');
+    return;
+  }
+
+  const files = [];
+  // Walk only .lean files. Skip lake artifact dirs and hidden dirs.
+  const SKIP = new Set(['.lake', '.git', 'node_modules', 'build']);
+  function scan(dir) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of entries) {
+      if (e.name.startsWith('.') && e.isDirectory()) continue;
+      if (SKIP.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { scan(full); }
+      else if (e.isFile() && full.endsWith('.lean')) {
+        try {
+          const content = fs.readFileSync(full, 'utf8');
+          if (content.length > 2 * 1024 * 1024) continue; // 2 MB cap per file
+          files.push({ path: path.relative(root, full), content });
+        } catch (_) { /* skip unreadable */ }
+      }
+    }
+  }
+  scan(root);
+  // Cap total size — if a project is larger than 16 MB of .lean source we
+  // probably shouldn't be loading it all into the browser anyway.
+  const totalBytes = files.reduce((a, f) => a + f.content.length, 0);
+  if (totalBytes > 16 * 1024 * 1024) {
+    res.writeHead(413, { 'Content-Type': 'text/plain' });
+    res.end(`project too large (${totalBytes} bytes across ${files.length} files)`);
+    return;
+  }
+  // Stable order by path for predictable test output.
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  const body = JSON.stringify({ name: path.basename(root), root, files });
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+  });
+  res.end(body);
+}
+
 const srv = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/api/compile') return handleCompile(req, res);
+  if (url.pathname === '/api/project/scan') return handleProjectScan(req, res);
   let target;
   if (url.pathname === '/vendor/manifest.json') {
     const body = JSON.stringify(getManifest());
