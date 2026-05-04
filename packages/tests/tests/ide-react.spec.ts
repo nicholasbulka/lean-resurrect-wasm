@@ -42,9 +42,9 @@ test.describe('React IDE', () => {
     await expect(page.getByRole('heading', { name: 'Architecture', level: 1 })).toBeVisible();
     // Wait for the first diagram's SVG to render.
     await expect(page.locator('.arch-page .diagram svg').first()).toBeVisible({ timeout: 10_000 });
-    // Should have at least the 4 diagrams authored (system, compile flow,
-    // redux, in-browser wasm status).
-    await expect(page.locator('.arch-page .diagram svg')).toHaveCount(4, { timeout: 15_000 });
+    // Should have all 5 diagrams authored: system, compile flow, grammar
+    // pipeline, redux, in-browser wasm status.
+    await expect(page.locator('.arch-page .diagram svg')).toHaveCount(5, { timeout: 15_000 });
   });
 
   test('design pane renders user-authored mermaid live', async ({ page }) => {

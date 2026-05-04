@@ -5,6 +5,7 @@ import { updateMermaid } from '../slices/proofsSlice';
 import { Mermaid } from './Mermaid';
 import { Diagnostics } from './Diagnostics';
 import { CodeMirror } from '../lib/cm/CodeMirror';
+import { GraphView } from './GraphView';
 
 export function RightPane() {
   const dispatch = useAppDispatch();
@@ -48,6 +49,12 @@ export function RightPane() {
           >
             Design
           </button>
+          <button
+            className={rightPane === 'graph' ? 'active' : ''}
+            onClick={() => dispatch(setRightPane('graph'))}
+          >
+            Graph
+          </button>
         </div>
         <span className={'status ' + statusClass}>{statusText}</span>
       </div>
@@ -65,6 +72,7 @@ export function RightPane() {
             proofId={proof.id}
           />
         )}
+        {rightPane === 'graph' && <GraphView />}
       </div>
     </div>
   );

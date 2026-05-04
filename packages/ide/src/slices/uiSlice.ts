@@ -1,7 +1,7 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
 export type View = 'editor' | 'architecture';
-export type RightPane = 'output' | 'design';
+export type RightPane = 'output' | 'design' | 'graph';
 export type CompileMode = 'server' | 'browser';
 
 interface UiState {
