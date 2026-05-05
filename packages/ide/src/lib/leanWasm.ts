@@ -179,9 +179,14 @@ export async function compileInBrowser(
       reject(new Error('compileInBrowser timeout (' + HARD_TIMEOUT_MS / 1000 + 's)'));
     }, HARD_TIMEOUT_MS);
 
+    // After each compile, dispose the worker. The Lean WASM build uses
+    // PROXY_TO_PTHREAD with noExitRuntime: false, so the runtime tears
+    // down once main exits — Module is dead and a second callMain in
+    // the same worker fails with [object ErrorEvent]. Re-spawning is
+    // cheap because the browser HTTP-caches lean.js + the staged oleans.
     state.pending.set(requestId, {
-      resolve: (r) => { clearTimeout(timeoutHandle); resolve(r); },
-      reject: (e) => { clearTimeout(timeoutHandle); reject(e); },
+      resolve: (r) => { clearTimeout(timeoutHandle); disposeLeanWorker(); resolve(r); },
+      reject: (e) => { clearTimeout(timeoutHandle); disposeLeanWorker(); reject(e); },
       onProgress,
     });
 
