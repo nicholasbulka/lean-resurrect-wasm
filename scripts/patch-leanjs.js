@@ -97,6 +97,15 @@ const prefix = `// LEAN_NODEFS_PATCHED
       var existing0 = (typeof globalThis.Module !== 'undefined') ? globalThis.Module : (typeof Module !== 'undefined' ? Module : {});
       Module = Object.assign({ noInitialRun: true, noExitRuntime: false }, existing0);
       Module.noInitialRun = true;
+      // Set LEAN_PATH / LEAN_SYSROOT on the pthread's Module.ENV so Lean's
+      // env reads (which can panic on Option.get!) succeed. The outer
+      // leanWorker stages oleans at /lib/lean and FS calls from pthreads
+      // are proxied back to main thread, so these paths are readable.
+      Module.ENV = Module.ENV || {};
+      if (!Module.ENV.LEAN_PATH) Module.ENV.LEAN_PATH = '/lib/lean';
+      if (!Module.ENV.LEAN_SYSROOT) Module.ENV.LEAN_SYSROOT = '/';
+      if (!Module.ENV.HOME) Module.ENV.HOME = '/home/user';
+      if (!Module.ENV.USER) Module.ENV.USER = 'user';
       // Pthread workers' default print/printErr goes to the worker's own
       // console (invisible). Relay via self.postMessage so the outer
       // leanWorker.js can capture it. Outer worker listens on each

@@ -171,7 +171,7 @@ export async function compileInBrowser(
   if (state.initError) throw state.initError;
 
   const requestId = state.nextRequestId++;
-  const HARD_TIMEOUT_MS = 60_000;
+  const HARD_TIMEOUT_MS = 180_000;
 
   return new Promise<CompileResult>((resolve, reject) => {
     const timeoutHandle = setTimeout(() => {

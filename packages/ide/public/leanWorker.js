@@ -378,7 +378,7 @@ async function compile(requestId, source, libraryPaths) {
     // emcc's PThread namespace exists iff the build is MT/PROXY_TO_PTHREAD.
     const isProxyBuild = typeof M.PThread === 'object' && M.PThread !== null;
     const sync = M.callMain(args);
-    const TIMEOUT_MS = 60_000;
+    const TIMEOUT_MS = 180_000;
     const timed = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('main never returned (no onExit) after ' + TIMEOUT_MS + 'ms')), TIMEOUT_MS));
     if (isProxyBuild) {
