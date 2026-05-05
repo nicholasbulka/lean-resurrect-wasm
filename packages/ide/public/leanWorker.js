@@ -178,18 +178,20 @@ async function init(leanJsUrl, manifestUrl) {
 
   postProgress({ phase: 'fetching-manifest', message: 'fetching olean manifest' });
   const manifest = await (await fetch(manifestUrl)).json();
-  // v4.27 module system: load Init's full file family (.olean, .server,
-  // .private, .ir) plus all per-module variants under Init/. Without all
-  // four, Lean errors with "missing data file" / "missing IR data file".
-  initEntries = manifest.entries.filter(
-    (e) =>
-      e.path === 'Init.olean' || e.path === 'Init.olean.server' ||
-      e.path === 'Init.olean.private' || e.path === 'Init.ir' ||
-      e.path.startsWith('Init/')
-  );
-  console.log('[leanWorker] manifest: ' + initEntries.length + ' Init entries');
+  // v4.27 module system: stage Init/Std/Lean's full file family
+  // (.olean, .server, .private, .ir) plus all per-module variants. Without
+  // all four file types, Lean errors with "missing data file" / "missing
+  // IR data file". User code that touches Std (e.g., HashMap, Array.size)
+  // or Lean (e.g., elaboration metadata) needs those staged too. We skip
+  // Lake/LakeMain/Leanc since they're build-tool internals.
+  const STAGE_PREFIXES = ['Init', 'Std', 'Lean'];
+  initEntries = manifest.entries.filter((e) => {
+    const seg = e.path.split('/')[0].replace(/\.olean(\.private|\.server)?$|\.ir$/, '');
+    return STAGE_PREFIXES.includes(seg);
+  });
+  console.log('[leanWorker] manifest: ' + initEntries.length + ' entries (Init+Std+Lean)');
 
-  postProgress({ phase: 'fetching-oleans', current: 0, total: initEntries.length, message: 'downloading Init oleans' });
+  postProgress({ phase: 'fetching-oleans', current: 0, total: initEntries.length, message: 'downloading stdlib oleans' });
   // Cap concurrency: browsers limit to ~6 connections per origin and a
   // small static server can drop requests under heavy load. Firing 2000+
   // fetches at once was causing "Failed to fetch" mid-batch.

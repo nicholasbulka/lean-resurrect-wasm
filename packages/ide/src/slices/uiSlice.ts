@@ -13,12 +13,11 @@ interface UiState {
 const initialState: UiState = {
   view: 'editor',
   rightPane: 'output',
-  // Default to server-side compile: the v4.27 WASM build in-browser
-  // hangs in pthread main on any callMain (even --version), so
-  // browser-mode compile times out without producing output. Until
-  // that's resolved, server is the only path that actually elaborates.
-  // Users can still flip the toggle to browser to experiment.
-  compileMode: 'server',
+  // Default to in-page WASM. Verified end-to-end (returns correct
+  // diagnostics for `def x : Nat := 42; #eval x`). Cold start is ~67s
+  // because we stage ~8000 olean files (Init + Std + Lean). Server
+  // mode is still available via the toggle for users who want it.
+  compileMode: 'browser',
 };
 
 const slice = createSlice({
