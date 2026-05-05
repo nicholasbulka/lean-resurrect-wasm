@@ -40,18 +40,25 @@ const MIME = {
   '.so': 'application/octet-stream',
 };
 
-function headers(size, mime) {
+function headers(size, mime, urlPath) {
+  // /vendor/* is immutable per Lean build (lean.js, lean.wasm, oleans).
+  // Aggressive caching saves the ~250MB WASM + ~7700-file olean re-fetch
+  // on every reload / worker re-spawn. Everything else (IDE bundle, API
+  // responses) stays no-store so dev changes are visible immediately.
+  const cacheControl = urlPath && urlPath.startsWith('/vendor/')
+    ? 'public, max-age=86400, immutable'
+    : 'no-store';
   return {
     'Content-Type': mime,
     'Content-Length': size,
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Embedder-Policy': 'require-corp',
     'Cross-Origin-Resource-Policy': 'cross-origin',
-    'Cache-Control': 'no-store',
+    'Cache-Control': cacheControl,
   };
 }
 
-function sendFile(res, filePath) {
+function sendFile(res, filePath, urlPath) {
   const ext = path.extname(filePath).toLowerCase();
   const mime = MIME[ext] || 'application/octet-stream';
   try {
@@ -61,7 +68,7 @@ function sendFile(res, filePath) {
       res.end('directory listing not allowed');
       return;
     }
-    res.writeHead(200, headers(stat.size, mime));
+    res.writeHead(200, headers(stat.size, mime, urlPath));
     fs.createReadStream(filePath).pipe(res);
   } catch (e) {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -317,7 +324,7 @@ const srv = http.createServer((req, res) => {
   let target;
   if (url.pathname === '/vendor/manifest.json') {
     const body = JSON.stringify(getManifest());
-    res.writeHead(200, headers(Buffer.byteLength(body), 'application/json; charset=utf-8'));
+    res.writeHead(200, headers(Buffer.byteLength(body), 'application/json; charset=utf-8', url.pathname));
     res.end(body);
     return;
   }
@@ -355,7 +362,7 @@ const srv = http.createServer((req, res) => {
       const resolvedDist = path.resolve(candidate);
       if (resolvedDist.startsWith(path.resolve(IDE_DIST))) {
         target = candidate;
-        sendFile(res, target);
+        sendFile(res, target, url.pathname);
         return;
       }
     }
@@ -367,7 +374,7 @@ const srv = http.createServer((req, res) => {
       return;
     }
   }
-  sendFile(res, target);
+  sendFile(res, target, url.pathname);
 });
 
 const PORT = Number(process.env.PORT) || 8787;
