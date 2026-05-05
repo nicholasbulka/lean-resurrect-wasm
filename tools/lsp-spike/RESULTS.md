@@ -173,19 +173,43 @@ suspension, but the suspension doesn't propagate through the layered
 JS code (`__syscall_read` → `FS.read` → `tty.ops.read` →
 `tty.ops.get_char` → `Module.stdin`).
 
-**Three known-good fixes** for the next iteration (each ~50 lines,
-no further rebuild required):
-1. Producer writes directly into `Module.FS.streams[0].tty.input`;
-   Module.stdin returns null only as EOF after Lean signals done.
-2. Override `tty.ops.get_char` to use `Asyncify.handleAsync` /
-   `WebAssembly.Suspending` directly, so the JSPI wrapper sees the
-   Promise from this layer.
-3. Patch the Emscripten runtime's TTY code to await Promise return
-   from Module.stdin.
+**Three fixes attempted in this session** (all documented; need new
+rebuild for the proper one):
 
-Option 1 is the cleanest minimum-viable path: doesn't require JSPI
-plumbing through the layered JS, doesn't require runtime patches,
-just bypasses Module.stdin entirely.
+1. ❌ **TTY direct write** (`spike-tty-direct.cjs`): probe revealed
+   `FS.streams[0].tty` doesn't exist in our build at all — fd 0 is
+   a generic stream with `stream_ops.read` referencing a closure-
+   captured `input` function, not a TTY. Also: FS streams aren't
+   set up until `postRun`, so we can't queue bytes in `preRun`.
+
+2. ❌ **Module.instrumentWasmImports hook**
+   (`spike-jspi-syscall.cjs`): tried to override `__syscall_read`
+   at the WASM-JS boundary via `Module.instrumentWasmImports`. This
+   user-facing hook does NOT exist in Emscripten 3.1.74 — only an
+   internal `Asyncify.instrumentWasmImports` exists, called by the
+   JSPI runtime itself, not user-overridable.
+
+3. ❌ **stream_ops.read async override** (`spike-streamops.cjs`):
+   replaced `FS.streams[0].stream_ops.read` with an async function
+   returning a Promise. **The override IS called** — logs show
+   "stream_ops.read call #1 length=0" and "#2 length=1024" before
+   the Promise resolves. But `FS.read` passes the Promise through
+   synchronously to `__syscall_read`, and the JSPI runtime does
+   NOT auto-wrap `__syscall_read` for suspension (default
+   `JSPI_IMPORTS` is empty). Lean's WASM gets a Promise instead of
+   a number, treats stream as closed.
+
+**Definitive next step**: rebuild with explicit
+`-sJSPI_IMPORTS=__syscall_read,__syscall_writev,...` at link time
+so the JSPI runtime wraps the I/O syscalls with
+`WebAssembly.Suspending`. Then `spike-streamops.cjs`'s async
+stream_ops.read should propagate to the WASM boundary correctly.
+`docker/relink-jspi.sh` updated with this flag for the next
+rebuild attempt.
+
+This is THE true blocker on continuous LSP via this approach.
+Mechanically simple to test (one more relink, ~25 min), but a
+real iteration that should be its own session.
 
 ## Phase 11.0 conclusion: Status B (partial success)
 
