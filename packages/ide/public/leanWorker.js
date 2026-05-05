@@ -59,9 +59,26 @@ function setupModule(leanJsBaseUrl, leanJsUrl, oleanBytes) {
     // main's return. Required so we can run multiple compiles against
     // the same Module without paying the 200+ MB lean.{js,wasm} reload
     // cost each time.
-    noExitRuntime: true,
-    print: (..._a) => {},      // re-armed per compile
-    printErr: (..._a) => {},   // re-armed per compile
+    // noExitRuntime: false means the runtime tears down after main exits
+    // and Module.onExit fires reliably. The trade-off is no reuse for
+    // multiple compiles per worker — but in PROXY_TO_PTHREAD mode we
+    // can't reliably observe the proxied main's exit otherwise.
+    noExitRuntime: false,
+    // CRITICAL: emcc captures `out`/`err` from Module.print/printErr at
+    // WASM module-load time (before any compile runs). Reassigning
+    // Module.print later — as we used to do per-compile — has NO
+    // effect because emcc's `out` already holds the original reference.
+    // Use stable functions that read per-compile state from a slot, and
+    // swap that slot's contents in compile() instead of reassigning the
+    // function on Module.
+    print: function (...a) {
+      const slot = self.__leanCurrentBuffers;
+      if (slot) slot.stdout += a.join(' ') + '\n';
+    },
+    printErr: function (...a) {
+      const slot = self.__leanCurrentBuffers;
+      if (slot) slot.stderr += a.join(' ') + '\n';
+    },
     locateFile: (p) => leanJsBaseUrl + p,
     // Without this, emcc-spawned pthread workers default to `_scriptName`
     // which inside our outer worker resolves to `/leanWorker.js`, not the
@@ -144,6 +161,20 @@ function waitForCalledRun() {
 async function init(leanJsUrl, manifestUrl) {
   console.log('[leanWorker] init: leanJsUrl=' + leanJsUrl);
   installNodeShim();
+  // Force Lean's std::thread::hardware_concurrency() (which maps to
+  // navigator.hardwareConcurrency) to 1 so its task manager doesn't try
+  // to spawn 8+ pthread workers from inside the lean_main pthread —
+  // that path deadlocks in browser context. Lean ignores LEAN_NUM_THREADS
+  // under Emscripten (runtime/object.cpp guards it with #ifndef
+  // LEAN_EMSCRIPTEN), so this is the only knob we have without a rebuild.
+  try {
+    Object.defineProperty(self.navigator, 'hardwareConcurrency', {
+      value: 1, configurable: true, writable: false,
+    });
+    console.log('[leanWorker] navigator.hardwareConcurrency forced to 1');
+  } catch (e) {
+    console.log('[leanWorker] could not override hardwareConcurrency: ' + e.message);
+  }
 
   postProgress({ phase: 'fetching-manifest', message: 'fetching olean manifest' });
   const manifest = await (await fetch(manifestUrl)).json();
@@ -298,15 +329,15 @@ async function compile(requestId, source, libraryPaths) {
   }
 
   const started = Date.now();
-  let stdoutBuf = '';
-  let stderrBuf = '';
+  // Per-compile buffer slot. Module.print captured at module-load reads
+  // from self.__leanCurrentBuffers; we swap its contents per compile.
+  const buffers = { stdout: '', stderr: '' };
+  self.__leanCurrentBuffers = buffers;
   // Reset cross-pthread output buffers so they only collect THIS compile.
   if (self.__leanPthreadBuf) {
     self.__leanPthreadBuf.stdout = '';
     self.__leanPthreadBuf.stderr = '';
   }
-  M.print = (...a) => { stdoutBuf += a.join(' ') + '\n'; };
-  M.printErr = (...a) => { stderrBuf += a.join(' ') + '\n'; };
 
   const ENV = M.ENV || {};
   if (libraryPaths && libraryPaths.length) {
@@ -335,18 +366,6 @@ async function compile(requestId, source, libraryPaths) {
     // path may still trap due to libuv stub gaps.
     const args = source.startsWith('@@version') ? ['--version'] : ['--json', '--root=/work', '/work/Input.lean'];
     console.log('[leanWorker] callMain args=' + JSON.stringify(args));
-    // Forward print/printErr live to the main thread so we can see what
-    // Lean managed to write before any trap.
-    M.print = (...a) => {
-      const s = a.join(' ');
-      stdoutBuf += s + '\n';
-      console.log('[leanWorker:stdout]', s);
-    };
-    M.printErr = (...a) => {
-      const s = a.join(' ');
-      stderrBuf += s + '\n';
-      console.log('[leanWorker:stderr]', s);
-    };
     // Two completion paths:
     //   A. callMain returns a number synchronously — true for v4.15-style
     //      builds (no PROXY_TO_PTHREAD); main runs inline on this worker.
@@ -369,7 +388,7 @@ async function compile(requestId, source, libraryPaths) {
         ? sync
         : await Promise.race([exitPromise, timed]);
     }
-    console.log('[leanWorker] main exited with ' + exitCode + ' stdout.len=' + stdoutBuf.length + ' stderr.len=' + stderrBuf.length);
+    console.log('[leanWorker] main exited with ' + exitCode + ' stdout.len=' + buffers.stdout.length + ' stderr.len=' + buffers.stderr.length);
   } catch (e) {
     console.log('[leanWorker] compile threw: ' + (e?.message || String(e)));
     // Surface buffered output even on error so we can tell what Lean got
@@ -378,8 +397,8 @@ async function compile(requestId, source, libraryPaths) {
       type: 'error',
       requestId,
       error: (e && e.message) || String(e),
-      partialStdout: stdoutBuf,
-      partialStderr: stderrBuf,
+      partialStdout: buffers.stdout,
+      partialStderr: buffers.stderr,
     });
     return;
   }
@@ -388,16 +407,16 @@ async function compile(requestId, source, libraryPaths) {
   // a pthread whose Module.print posts {__leanStdout} to us; the wrapped
   // Worker constructor in init() catches them into __leanPthreadBuf).
   if (self.__leanPthreadBuf) {
-    if (self.__leanPthreadBuf.stdout) stdoutBuf += self.__leanPthreadBuf.stdout;
-    if (self.__leanPthreadBuf.stderr) stderrBuf += self.__leanPthreadBuf.stderr;
+    if (self.__leanPthreadBuf.stdout) buffers.stdout += self.__leanPthreadBuf.stdout;
+    if (self.__leanPthreadBuf.stderr) buffers.stderr += self.__leanPthreadBuf.stderr;
   }
-  const { diagnostics, residualStdout } = parseJsonDiagnostics(stdoutBuf);
+  const { diagnostics, residualStdout } = parseJsonDiagnostics(buffers.stdout);
   postMessage({
     type: 'result',
     requestId,
     result: {
       stdout: residualStdout,
-      stderr: stderrBuf,
+      stderr: buffers.stderr,
       exitCode,
       ms: Date.now() - started,
       diagnostics,

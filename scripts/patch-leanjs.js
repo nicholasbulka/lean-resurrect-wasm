@@ -64,6 +64,36 @@ const prefix = `// LEAN_NODEFS_PATCHED
       console.log('[lean.js patch] browser path: isBrowserPthread=' + isBrowserPthread + ' self.name=' + (typeof self !== 'undefined' ? self.name : '<no self>'));
     } catch (_) {}
     if (isBrowserPthread) {
+      // Lean's runtime calls std::thread::hardware_concurrency() to size its
+      // task pool. Under Emscripten that maps to navigator.hardwareConcurrency
+      // (typically 8-16). With PTHREAD_POOL_SIZE=4 and PROXY_TO_PTHREAD using
+      // one slot for lean_main, spawning that many sub-pthreads from inside
+      // the lean_main pthread can deadlock. Force it to 1. (LEAN_NUM_THREADS
+      // is ignored under #ifdef LEAN_EMSCRIPTEN in runtime/object.cpp, so
+      // this is the only knob we have without a Lean rebuild.)
+      try {
+        Object.defineProperty(self.navigator, 'hardwareConcurrency', {
+          value: 1, configurable: true, writable: false,
+        });
+      } catch (_) {}
+      // Lean's IO.appPath EM_ASM in runtime/io.cpp checks process.release.name
+      // and reads __filename. The pthread Worker scope has neither, so
+      // appPath returns 0 and Lean errors with "no Lean executable file
+      // exists in WASM outside of Node.js" — even before --version prints.
+      // Install a Node shim local to the pthread.
+      if (typeof self.process === 'undefined') {
+        self.process = {
+          release: { name: 'node' },
+          env: { HOME: '/home/user', TMPDIR: '/tmp', USER: 'user' },
+          cwd: function () { return '/'; },
+          argv: ['lean'],
+          platform: 'linux',
+        };
+      }
+      if (typeof self.__filename === 'undefined') {
+        self.__filename = '/lean';
+        self.__dirname = '/';
+      }
       var existing0 = (typeof globalThis.Module !== 'undefined') ? globalThis.Module : (typeof Module !== 'undefined' ? Module : {});
       Module = Object.assign({ noInitialRun: true, noExitRuntime: false }, existing0);
       Module.noInitialRun = true;
