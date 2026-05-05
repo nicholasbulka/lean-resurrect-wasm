@@ -351,16 +351,24 @@ async function compile(requestId, source, libraryPaths) {
     //   A. callMain returns a number synchronously — true for v4.15-style
     //      builds (no PROXY_TO_PTHREAD); main runs inline on this worker.
     //      Use that number as the exit code immediately.
-    //   B. callMain returns void / undefined — proxy_main builds dispatch
-    //      to a pthread. Wait for Module.onExit to know when main truly
-    //      finishes.
+    //   B. PROXY_TO_PTHREAD builds: callMain dispatches to
+    //      _emscripten_proxy_main, which returns a queueing-ack number
+    //      synchronously *before* main actually runs. That number is NOT
+    //      the real exit code — Lean main hasn't started yet. We must
+    //      ignore the sync return and wait for Module.onExit.
+    // emcc's PThread namespace exists iff the build is MT/PROXY_TO_PTHREAD.
+    const isProxyBuild = typeof M.PThread === 'object' && M.PThread !== null;
     const sync = M.callMain(args);
-    const TIMEOUT_MS = 30_000;
+    const TIMEOUT_MS = 60_000;
     const timed = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('main never returned (no onExit)')), TIMEOUT_MS));
-    exitCode = typeof sync === 'number'
-      ? sync
-      : await Promise.race([exitPromise, timed]);
+      setTimeout(() => reject(new Error('main never returned (no onExit) after ' + TIMEOUT_MS + 'ms')), TIMEOUT_MS));
+    if (isProxyBuild) {
+      exitCode = await Promise.race([exitPromise, timed]);
+    } else {
+      exitCode = typeof sync === 'number'
+        ? sync
+        : await Promise.race([exitPromise, timed]);
+    }
     console.log('[leanWorker] main exited with ' + exitCode + ' stdout.len=' + stdoutBuf.length + ' stderr.len=' + stderrBuf.length);
   } catch (e) {
     console.log('[leanWorker] compile threw: ' + (e?.message || String(e)));

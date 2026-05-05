@@ -13,10 +13,12 @@ interface UiState {
 const initialState: UiState = {
   view: 'editor',
   rightPane: 'output',
-  // Default to in-page WASM so the IDE works as a static-files-only
-  // app (no server compile endpoint required). The /api/compile path
-  // remains available as a fallback users can pick from the toggle.
-  compileMode: 'browser',
+  // Default to server-side compile: the v4.27 WASM build in-browser
+  // hangs in pthread main on any callMain (even --version), so
+  // browser-mode compile times out without producing output. Until
+  // that's resolved, server is the only path that actually elaborates.
+  // Users can still flip the toggle to browser to experiment.
+  compileMode: 'server',
 };
 
 const slice = createSlice({
