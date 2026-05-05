@@ -204,6 +204,25 @@ rebuild for the proper one):
 generated (verified `importPattern=/^(__syscall_read|...)$/` in
 the source), but the WASM still doesn't suspend on the Promise.
 
+**LATER discovery (sixth rebuild iteration)**: `__syscall_read`
+isn't the right import name. Lean's WASM uses WASI imports —
+`fd_read` is the actual function it calls for stdin reads.
+Searching the JS source confirms: only `__syscall_readlinkat`
+exists (a different syscall — readlink at fd), no
+`__syscall_read`. The earlier JSPI_IMPORTS list was wrapping
+imports that Lean never calls.
+
+Sixth rebuild attempt uses
+`JSPI_IMPORTS=fd_read,fd_write,fd_pread,fd_pwrite` — the right
+WASI import names. Plus PROXY_TO_PTHREAD stripped from leanc.sh
+and JSPI_EXPORTS=main. If suspension finally engages on this
+attempt, it's because all three conditions are now satisfied:
+(1) main runs on a suspendable stack (JSPI_EXPORTS=main + no
+PROXY_TO_PTHREAD), (2) fd_read is wrapped with Suspending
+(JSPI_IMPORTS=fd_read), (3) our async stream_ops.read returns
+the Promise that propagates up through FS.read → fd_read → JSPI
+wrapper.
+
 **Reason** (the actual layer-down blocker): for
 `WebAssembly.Suspending` to ACTUALLY suspend, the caller WASM
 function must be on a **suspendable stack**. A WASM stack is
