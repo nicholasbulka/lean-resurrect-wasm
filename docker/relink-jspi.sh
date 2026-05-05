@@ -40,6 +40,7 @@ echo "[jspi-relink] linking with -sJSPI=1 → bin/lean-jspi.{js,wasm}"
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -s JSPI=1 \
   -s JSPI_IMPORTS=__syscall_read,__syscall_writev,__syscall_pread64,__syscall_pwrite64 \
+  -s JSPI_EXPORTS=main \
   -I/work/build/stage1/include \
   -O3 \
   --profiling-funcs \

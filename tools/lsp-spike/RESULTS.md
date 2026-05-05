@@ -199,17 +199,34 @@ rebuild for the proper one):
    `JSPI_IMPORTS` is empty). Lean's WASM gets a Promise instead of
    a number, treats stream as closed.
 
-**Definitive next step**: rebuild with explicit
-`-sJSPI_IMPORTS=__syscall_read,__syscall_writev,...` at link time
-so the JSPI runtime wraps the I/O syscalls with
-`WebAssembly.Suspending`. Then `spike-streamops.cjs`'s async
-stream_ops.read should propagate to the WASM boundary correctly.
-`docker/relink-jspi.sh` updated with this flag for the next
-rebuild attempt.
+**Tested with JSPI_IMPORTS rebuild (2026-05-04 third rebuild,
+~25 min)**: still doesn't suspend. The Suspending wrappers ARE
+generated (verified `importPattern=/^(__syscall_read|...)$/` in
+the source), but the WASM still doesn't suspend on the Promise.
 
-This is THE true blocker on continuous LSP via this approach.
-Mechanically simple to test (one more relink, ~25 min), but a
-real iteration that should be its own session.
+**Reason** (the actual layer-down blocker): for
+`WebAssembly.Suspending` to ACTUALLY suspend, the caller WASM
+function must be on a **suspendable stack**. A WASM stack is
+suspendable only if entered via `WebAssembly.promising()` (a JSPI
+export wrapper). Without `-sJSPI_EXPORTS=main` (or whatever wraps
+the main entry point), `Module.callMain` invokes main on a
+non-suspendable stack, so Suspending-wrapped imports can't
+actually suspend even when called.
+
+**Definitive next step**: another rebuild with BOTH
+`-sJSPI_IMPORTS=__syscall_read,...` AND `-sJSPI_EXPORTS=main`.
+`docker/relink-jspi.sh` updated. ~25 min in container.
+
+There's a remaining unknown: PROXY_TO_PTHREAD interaction.
+Lean's main runs on a pthread, not on the main thread. The
+pthread's invocation of main might NOT be via the JSPI_EXPORTS
+promising wrapper (it goes through Emscripten's emscripten_proxy_main
+or similar). So even with JSPI_EXPORTS=main, the pthread may not
+be on a suspendable stack.
+
+This is now genuinely R&D territory. Each rebuild is 25 min, each
+iteration tests a hypothesis. Multi-day investigation. Stopping
+the session here with the next step clearly identified.
 
 ## Phase 11.0 conclusion: Status B (partial success)
 
