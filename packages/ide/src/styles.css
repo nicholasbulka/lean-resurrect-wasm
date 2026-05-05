@@ -105,6 +105,19 @@ body { font: 14px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; color: #
 .sidebar-tree .ft-file.active { background: var(--accent-bg); font-weight: 600; }
 .sidebar-tree .ft-chev { color: var(--text-muted); width: 10px; display: inline-block; }
 .sidebar-tree .ft-name { overflow: hidden; text-overflow: ellipsis; }
+
+/* Import graph view */
+.graph-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.graph-empty { padding: 16px; color: var(--text-muted); }
+.graph-stats {
+  display: flex; gap: 14px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-pane);
+}
+.graph-canvas { flex: 1; min-height: 0; position: relative; }
+.graph-canvas > div { width: 100%; height: 100%; }
 .pane { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
 .pane:last-child { border-right: none; }
 

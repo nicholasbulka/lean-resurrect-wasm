@@ -126,6 +126,55 @@ interface TreeLike {
   topNode: SyntaxNode;
 }
 
+// === Imports ===
+// Extract `import X.Y.Z` statements from the parsed tree. Used by the
+// Graph view to build the project-wide import dependency graph.
+
+export interface ImportEntry {
+  /** Full source-text range of the `import` keyword. */
+  from: number;
+  to: number;
+  /** Dotted module path: "Lc.LiCriterion.Basic". */
+  modulePath: string;
+}
+
+/** Parse Lean source and extract its imports without holding a Tree across calls. */
+export function extractImportsFromSource(source: string): ImportEntry[] {
+  const tree = parser.parse(source);
+  return extractImports({ topNode: tree.topNode }, {
+    sliceString: (from, to) => source.slice(from, to),
+  });
+}
+
+export function extractImports(
+  tree: TreeLike,
+  doc: { sliceString(from: number, to: number): string },
+): ImportEntry[] {
+  const out: ImportEntry[] = [];
+  let item = tree.topNode.firstChild;
+  while (item) {
+    if (item.name === 'NamespaceCmd') {
+      // The namespaceKeyword wrapper rule is collapsed by Lezer — the
+      // kw<term> result (e.g. node named "import") is a direct child
+      // of NamespaceCmd. First Identifier after it is the module path.
+      const kw = item.firstChild;
+      if (kw && kw.name === 'import') {
+        let scan: SyntaxNode | null = kw.nextSibling;
+        while (scan && scan.name !== 'Identifier') scan = scan.nextSibling;
+        if (scan) {
+          out.push({
+            from: kw.from,
+            to: scan.to,
+            modulePath: doc.sliceString(scan.from, scan.to),
+          });
+        }
+      }
+    }
+    item = item.nextSibling;
+  }
+  return out;
+}
+
 export function extractOutline(tree: TreeLike, doc: { sliceString(from: number, to: number): string }): OutlineEntry[] {
   const out: OutlineEntry[] = [];
   let child = tree.topNode.firstChild;
