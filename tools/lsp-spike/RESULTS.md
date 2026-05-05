@@ -1,7 +1,9 @@
-# Phase 11 spike — RESULT: LSP-via-WASM (one-shot YES, continuous NO)
+# Phase 11 spike — RESULT: continuous LSP via JSPI rebuild is real (Status B)
 
 Date: 2026-05-04
-Toolchain: Lean v4.27.0 MT=ON, Node WASM, no Lean patches.
+Toolchain: Lean v4.27.0 MT=ON, Node WASM. Two builds:
+- production: `vendor/lean-linux_wasm32/bin/lean.{js,wasm}` (MT=ON, no Asyncify)
+- experimental: `build-wasm/stage1/bin/lean-jspi.{js,wasm}` (MT=ON, JSPI=1)
 
 ## TL;DR
 
@@ -131,7 +133,78 @@ functional for exploratory work.
 
 All four scripts are reproducible (`node tools/lsp-spike/<script>.cjs`).
 
-## Recommendation
+## Phase 11.0 follow-up: JSPI rebuild (2026-05-04 same day)
+
+Built `lean-jspi.{js,wasm}` via `docker/relink-jspi.sh` + the host
+wrapper at `scripts/docker-relink-jspi.sh`. Used `-sJSPI=1` instead
+of `-sASYNCIFY=1` because JSPI is compatible with `-fwasm-exceptions`
+(Lean's C++ exception model). Build time: ~25 min for full relink
+(faster than ASYNCIFY=1's ~hour-plus wasm-opt instrumentation).
+
+Artifacts:
+- `lean-jspi.js`: 114 MB (similar to production 119 MB)
+- `lean-jspi.wasm`: 149 MB (vs. production 138 MB; +8% from JSPI
+  glue, much smaller growth than ASYNCIFY=1's projected ~30%)
+
+**Smoke (`smoke-asyncify.cjs` against the JSPI binary)**: PASSES.
+After patching with `node scripts/patch-leanjs.js
+build-wasm/stage1/bin/lean-jspi.js` (NODEFS mount + pthread relay
+patches that the existing harness depends on), and running with
+`node --experimental-wasm-stack-switching`, the binary boots and
+prints `Lean (version 4.27.0, wasm32-unknown-emscripten, ...)` from
+`callMain(['--version'])`. Cold-start ~10s.
+
+**Continuous LSP (`spike-async.cjs` against the JSPI binary)**:
+PARTIAL. The binary boots into `--server` mode and reads bytes from
+our async `Module.stdin`. But Lean's LSP responds with:
+
+    Watchdog error: Cannot read LSP request: No Content-Length field
+    in header: [(
+
+The bytes Lean is reading are NOT our LSP frame — they're junk.
+
+**Root cause** (identified, not yet fixed): Emscripten's TTY
+`get_char` calls `Module.stdin()` and treats the result as either a
+byte, a string, or an array. When `Module.stdin` returns a Promise,
+`get_char` doesn't know to await — it iterates the Promise object as
+if it were an array, pushing `undefined` into `tty.input`, which
+later gets read as garbage bytes. JSPI auto-wraps WASM imports for
+suspension, but the suspension doesn't propagate through the layered
+JS code (`__syscall_read` → `FS.read` → `tty.ops.read` →
+`tty.ops.get_char` → `Module.stdin`).
+
+**Three known-good fixes** for the next iteration (each ~50 lines,
+no further rebuild required):
+1. Producer writes directly into `Module.FS.streams[0].tty.input`;
+   Module.stdin returns null only as EOF after Lean signals done.
+2. Override `tty.ops.get_char` to use `Asyncify.handleAsync` /
+   `WebAssembly.Suspending` directly, so the JSPI wrapper sees the
+   Promise from this layer.
+3. Patch the Emscripten runtime's TTY code to await Promise return
+   from Module.stdin.
+
+Option 1 is the cleanest minimum-viable path: doesn't require JSPI
+plumbing through the layered JS, doesn't require runtime patches,
+just bypasses Module.stdin entirely.
+
+## Phase 11.0 conclusion: Status B (partial success)
+
+Per `PHASE-11.0-ACCEPTANCE.md`:
+- Build links cleanly with JSPI=1
+- Binary boots, --version smoke passes
+- LSP --server runs, reads stdin
+- Continuous interaction blocked at the Module.stdin Promise
+  unwrapping layer — characterized failure with three concrete
+  fixes proposed
+- Regression bar holds (production binary unchanged, /api/compile
+  returns "42", /api/project/scan returns 166, 6/6 React IDE tests
+  pass)
+
+This is a clean stopping point. Phase 11.1 (next session) starts
+with implementing fix option 1 against the existing
+`lean-jspi.{js,wasm}` artifact — no further rebuild needed.
+
+## Original recommendation (revised)
 
 **Do not invest in Phase 11 (continuous LSP) without first investing
 in an Asyncify rebuild.** The architectural block is real, not a
