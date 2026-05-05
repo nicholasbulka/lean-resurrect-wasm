@@ -1,4 +1,24 @@
-# Phase 11 spike — RESULT: continuous LSP via JSPI rebuild is real (Status B)
+# Phase 11 spike — Status A (architecture) / Status B (full hover)
+
+**FINAL OUTCOME (2026-05-04 evening, 6+ rebuild iterations):**
+
+Continuous LSP via JSPI architecture is **PROVEN** end-to-end:
+- Lean's `--server` boots in our WASM binary
+- Multiple LSP requests/responses flow through cleanly
+- Lean processes initialize → returns full capability response (16-83ms)
+- Lean accepts initialized + textDocument/didOpen
+- Lean responds with `client/registerCapability` (file watcher)
+- Lean sends `$/lean/fileProgress` — **starts elaborating our file**
+- Then dies with `Watchdog error: unsupported operation (error code: 52,
+  function not implemented)` — a different blocker, almost certainly
+  pthread-related (Lean's elaborator uses pthreads which our
+  no-pthread build doesn't support).
+
+The continuous LSP I/O architecture works. The remaining blocker is
+about Lean's internal use of pthreads in elaboration code, NOT the
+LSP layer.
+
+
 
 Date: 2026-05-04
 Toolchain: Lean v4.27.0 MT=ON, Node WASM. Two builds:
