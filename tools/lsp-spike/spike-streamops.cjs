@@ -121,14 +121,19 @@ require(leanJsFull);
   let readCalls = 0;
   stdin.stream_ops = Object.assign({}, oldOps, {
     read(stream, buffer, offset, length, position) {
-      readCalls++;
-      console.log('[spike-so] stream_ops.read call #' + readCalls + ' length=' + length + ' queue=' + stdinByteQueue.length);
-      // Test: return a Promise. If FS.read passes it through and __syscall_read
-      // gets wrapped by JSPI, this suspends WASM until the Promise resolves.
+      const callId = ++readCalls;
+      // Length-0 reads are probes ("is stream readable?") — answer
+      // sync 0 to avoid creating a no-op Promise the WASM stack might
+      // mishandle.
+      if (length === 0) {
+        console.log('[spike-so] stream_ops.read #' + callId + ' length=0 (sync 0)');
+        return 0;
+      }
+      console.log('[spike-so] stream_ops.read call #' + callId + ' length=' + length + ' queue=' + stdinByteQueue.length);
       return (async () => {
         const bytes = await readBytesAsync(length);
         for (let i = 0; i < bytes.length; i++) buffer[offset + i] = bytes[i];
-        console.log('[spike-so] stream_ops.read #' + readCalls + ' returning ' + bytes.length + ' bytes');
+        console.log('[spike-so] stream_ops.read #' + callId + ' returning ' + bytes.length + ' bytes (queue now ' + stdinByteQueue.length + ')');
         return bytes.length;
       })();
     },
