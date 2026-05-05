@@ -1,8 +1,42 @@
 # Phase 11 spike — Status A (architecture) / Status B (full hover)
 
-**FINAL OUTCOME (2026-05-04 evening, 6+ rebuild iterations):**
+**FINAL FINAL OUTCOME (2026-05-05 morning, 8 rebuilds):**
 
-Continuous LSP via JSPI architecture is **PROVEN** end-to-end:
+The JSPI/continuous-I/O architecture works completely. The end-to-end
+hover deliverable is blocked by Lean's process model, not by our
+WASM/JSPI integration. Specifically: Lean's `--server` mode is a
+*watchdog* that spawns `--worker` subprocesses via `uv_spawn` for
+elaboration. Emscripten's libuv has `uv_spawn` stubbed (WASM
+sandboxes can't fork subprocesses). When Lean's watchdog tries to
+spawn its first worker after `didOpen`, it fails with errno 52
+(UV_ENOSYS) and exits. Trying `--worker` directly skips the
+watchdog but `--worker` expects an undocumented startup protocol
+from the watchdog and never responds to LSP frames sent to its
+stdin.
+
+This means **in-process Lean LSP with elaboration cannot be
+delivered** without modifying Lean to support single-process LSP
+(integrating watchdog and worker). That's a substantial Lean-side
+change — beyond reasonable scope.
+
+What we proved (still valuable):
+- JSPI is a real path for async I/O between JS host and WASM
+- The `globalThis.__leanFdReadOverride` + Asyncify/Suspending
+  pattern works
+- Multiple LSP frames flow through; Lean's LSP layer functions
+  correctly up to subprocess spawning
+
+What this implies for the IDE roadmap:
+- Hover/goto-def/completion via in-process Lean cannot ship without
+  upstream Lean changes
+- Practical alternative: spawn-per-request (subprocess Lean, fresh
+  per LSP query, ~10s/hover cold). Same architecture as
+  `/api/compile` but with LSP frames instead of compile output.
+- The JSPI spike scaffolding is documented and reproducible; if/when
+  upstream Lean adds single-process LSP, our work on the JSPI side
+  is the foundation.
+
+
 - Lean's `--server` boots in our WASM binary
 - Multiple LSP requests/responses flow through cleanly
 - Lean processes initialize → returns full capability response (16-83ms)

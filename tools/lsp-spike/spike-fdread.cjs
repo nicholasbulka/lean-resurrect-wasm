@@ -9,8 +9,9 @@
 const path = require('node:path');
 const fs = require('node:fs');
 
-const LEAN_ROOT = '/Users/nicholasbulka/prog/lean/wasm/build-wasm/stage1/bin';
-const LEAN_JS = 'lean-jspi-st.js';
+const LEAN_ROOT = process.env.LEAN_BIN_DIR ||
+  '/Users/nicholasbulka/prog/lean/wasm/build-wasm/stage1/bin';
+const LEAN_JS = process.env.LEAN_JS || 'lean-jspi-st.js';
 
 // === Async stdin queue ===
 const stdinByteQueue = [];
@@ -130,9 +131,16 @@ global.Module = {
 
 const leanJsFull = path.join(LEAN_ROOT, LEAN_JS);
 if (!fs.readFileSync(leanJsFull, 'utf8').startsWith('// LEAN_NODEFS_PATCHED')) {
-  console.log('[fdread] patching', leanJsFull);
+  console.log('[fdread] patching NODEFS', leanJsFull);
   require('node:child_process').execFileSync(
     process.execPath, ['scripts/patch-leanjs.js', leanJsFull],
+    { cwd: '/Users/nicholasbulka/prog/lean/wasm', stdio: 'inherit' });
+}
+// Inject the JSPI fd_read hook (idempotent).
+if (!fs.readFileSync(leanJsFull, 'utf8').includes('JSPI_FD_READ_HOOK')) {
+  console.log('[fdread] patching JSPI fd_read hook into', leanJsFull);
+  require('node:child_process').execFileSync(
+    process.execPath, ['scripts/patch-jspi-fdread.js', leanJsFull],
     { cwd: '/Users/nicholasbulka/prog/lean/wasm', stdio: 'inherit' });
 }
 
