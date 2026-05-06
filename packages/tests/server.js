@@ -292,6 +292,61 @@ async function handleCompile(req, res) {
 // and reject obvious traversal attempts. There's no allowlist beyond
 // "must be an absolute path that exists and is a directory" — for a
 // shared/remote deployment, gate this behind explicit roots.
+// POST /api/project/oleans
+//   body: { root: string }
+//   reply: packed binary bundle of every .olean / .olean.private /
+//          .olean.server / .ir under <root>/.lake/build/lib/lean/.
+//          Format identical to /vendor/oleans.bundle:
+//            u32 count
+//            per entry: u16 pathLen, pathBytes, u32 dataLen, dataBytes
+//          Empty bundle (just the count=0) if no .lake build directory.
+async function handleProjectOleans(req, res) {
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'text/plain' });
+    res.end('POST only');
+    return;
+  }
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  let parsed;
+  try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch (_) { res.writeHead(400); res.end('bad json'); return; }
+  const root = String(parsed.root ?? '');
+  if (!root || !path.isAbsolute(root)) { res.writeHead(400); res.end('absolute root required'); return; }
+  const lakeLib = path.join(root, '.lake', 'build', 'lib', 'lean');
+  let entries = [];
+  try {
+    if (fs.statSync(lakeLib).isDirectory()) {
+      entries = walk(lakeLib, lakeLib, (p) =>
+        p.endsWith('.olean') || p.endsWith('.olean.private') ||
+        p.endsWith('.olean.server') || p.endsWith('.ir')
+      );
+    }
+  } catch (_) { /* no .lake — return empty bundle */ }
+  const parts = [];
+  const countBuf = Buffer.alloc(4);
+  countBuf.writeUInt32LE(entries.length, 0);
+  parts.push(countBuf);
+  for (const e of entries) {
+    const data = fs.readFileSync(path.join(lakeLib, e.path));
+    const pathBuf = Buffer.from(e.path, 'utf8');
+    const pathLen = Buffer.alloc(2); pathLen.writeUInt16LE(pathBuf.length, 0);
+    const dataLen = Buffer.alloc(4); dataLen.writeUInt32LE(data.length, 0);
+    parts.push(pathLen, pathBuf, dataLen, data);
+  }
+  const body = Buffer.concat(parts);
+  console.log('[tests-server] project oleans: ' + entries.length + ' files, ' + (body.length / 1048576).toFixed(1) + ' MB from ' + lakeLib);
+  res.writeHead(200, {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': body.length,
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'Cache-Control': 'no-store',
+  });
+  res.end(body);
+}
+
 async function handleProjectScan(req, res) {
   if (req.method !== 'POST') {
     res.writeHead(405, { 'Content-Type': 'text/plain' });
@@ -372,6 +427,7 @@ const srv = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/api/compile') return handleCompile(req, res);
   if (url.pathname === '/api/project/scan') return handleProjectScan(req, res);
+  if (url.pathname === '/api/project/oleans') return handleProjectOleans(req, res);
   let target;
   if (url.pathname === '/vendor/manifest.json') {
     const body = JSON.stringify(getManifest());

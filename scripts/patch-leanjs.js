@@ -107,7 +107,7 @@ const prefix = `// LEAN_NODEFS_PATCHED
       // leanWorker stages oleans at /lib/lean and FS calls from pthreads
       // are proxied back to main thread, so these paths are readable.
       Module.ENV = Module.ENV || {};
-      if (!Module.ENV.LEAN_PATH) Module.ENV.LEAN_PATH = '/lib/lean';
+      if (!Module.ENV.LEAN_PATH) Module.ENV.LEAN_PATH = '/work/lib/lean:/lib/lean';
       if (!Module.ENV.LEAN_SYSROOT) Module.ENV.LEAN_SYSROOT = '/';
       if (!Module.ENV.HOME) Module.ENV.HOME = '/home/user';
       if (!Module.ENV.USER) Module.ENV.USER = 'user';

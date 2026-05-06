@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../store';
 import {
   addScratchProject, deleteProject, importProject, renameProject, selectProject,
+  setProjectOleansBundle,
 } from '../slices/projectsSlice';
 import { setView, setCompileMode, type CompileMode } from '../slices/uiSlice';
 
@@ -44,6 +45,26 @@ export function ProjectMenu() {
       }
       const { name, root: scannedRoot, files } = await r.json();
       dispatch(importProject({ name, root: scannedRoot, files }));
+      // Also fetch the project's prebuilt oleans bundle (.lake/build/lib/lean)
+      // so the in-browser compiler can resolve project-internal imports
+      // (e.g. `import Lc.LiCriterion.Basic`). Skipped silently if the
+      // project hasn't been built — compile will then fail on those
+      // imports the same way it would for a never-built project.
+      try {
+        const bundleR = await fetch('/api/project/oleans', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ root: scannedRoot }),
+        });
+        if (bundleR.ok) {
+          const bytes = new Uint8Array(await bundleR.arrayBuffer());
+          // Bundle starts with a u32 count; size > 4 means at least one olean.
+          if (bytes.byteLength > 4) {
+            const id = (window as any).__store?.getState()?.projects?.currentId;
+            if (id) setProjectOleansBundle(id, bytes);
+          }
+        }
+      } catch (_) { /* non-fatal */ }
     } catch (e: any) {
       alert('import error: ' + (e?.message ?? String(e)));
     } finally {

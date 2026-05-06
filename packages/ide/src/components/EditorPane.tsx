@@ -3,7 +3,7 @@ import { basicSetup } from 'codemirror';
 import { keymap } from '@codemirror/view';
 import type { EditorView } from '@codemirror/view';
 import { useAppDispatch, useAppSelector } from '../store';
-import { updateFileContent } from '../slices/projectsSlice';
+import { updateFileContent, getProjectOleansBundle } from '../slices/projectsSlice';
 import { compileSource, cancelCurrentCompile } from '../slices/compileSlice';
 import { LibraryPaths } from './LibraryPaths';
 import { createCm6Bridge } from '../lib/editorBridge';
@@ -36,6 +36,7 @@ export function EditorPane() {
       source: file.content,
       libraryPaths: project.libraryPaths,
       mode: compileMode,
+      projectOleansBundle: getProjectOleansBundle(project.id) ?? undefined,
     }));
   }
   runCompileRef.current = runCompile;

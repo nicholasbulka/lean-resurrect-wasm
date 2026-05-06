@@ -181,6 +181,10 @@ export function ensureLeanLoaded(onProgress: OnProgress = noopProgress): Promise
 
 export interface BrowserCompileOptions {
   libraryPaths?: string[];
+  /** Per-compile olean bundle (project-prebuilt .lake/build/lib/lean/*).
+   * Staged into MEMFS at /work/lib/lean before callMain so imports of
+   * project-internal modules (Lc.*, etc.) resolve. */
+  projectOleansBundle?: Uint8Array;
   onProgress?: OnProgress;
 }
 
@@ -227,6 +231,7 @@ export async function compileInBrowser(
       requestId,
       source,
       libraryPaths: opts.libraryPaths ?? [],
+      projectOleansBundle: opts.projectOleansBundle,
     });
   });
 }

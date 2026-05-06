@@ -25,6 +25,24 @@ export interface Project {
   libraryPaths: string[];
   /** Project-level mermaid design diagram. */
   mermaidSource: string;
+  /** Packed binary bundle of project oleans (.lake/build/lib/lean/**)
+   * fetched at import time. Same wire format as /vendor/oleans.bundle:
+   *   u32 count; per entry: u16 pathLen, path, u32 dataLen, data.
+   * Held outside Redux because Uint8Array isn't serializable;
+   * see __projectOleansByProject in this slice. */
+}
+
+// Side-table holding non-serializable bundle bytes. Keyed by project id.
+// Lives outside the Redux state so RTK's serialization warnings don't
+// fire on each render; the IDE never persists or replays this — it's
+// re-fetched whenever a project is re-imported.
+const __projectOleansByProject = new Map<string, Uint8Array>();
+export function setProjectOleansBundle(projectId: string, bytes: Uint8Array | null) {
+  if (bytes) __projectOleansByProject.set(projectId, bytes);
+  else __projectOleansByProject.delete(projectId);
+}
+export function getProjectOleansBundle(projectId: string): Uint8Array | null {
+  return __projectOleansByProject.get(projectId) ?? null;
 }
 
 export interface ProjectsState {
