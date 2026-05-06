@@ -82,11 +82,16 @@ function anyLeanUnder(dir) {
   return false;
 }
 
-// Walk a srcRoot recursively, return list of .lean files (relative to srcRoot).
-// Skips dirs that conventionally hold non-library source: tests, examples,
-// archive material, scripts, etc. Conservative — false positives only
-// produce harmless extra modules.
-const SKIP_DIRS = new Set([
+// Walk a srcRoot for .lean files. Two modes:
+//   - compileRoot specified: only include <compileRoot>.lean and files
+//     under <compileRoot>/. This is correct for lake-style packages
+//     where module names are <PkgNamespace>.<...> and any other top-
+//     level dir (BatteriesTest/, Shake/, scripts/, examples/) is not
+//     part of the library and likely won't compile in our setup.
+//   - compileRoot null: walk everything, skipping a hard-coded list
+//     of conventional non-library dirs. Used when the package has no
+//     clear single namespace root.
+const SKIP_DIRS_GLOBAL = new Set([
   'test', 'tests', 'Test', 'Tests',
   'example', 'examples', 'Example', 'Examples',
   'Archive', 'archive',
@@ -96,19 +101,37 @@ const SKIP_DIRS = new Set([
   'LongestPole',
   'Cache',
 ]);
-function listLeanFiles(srcRoot) {
+function listLeanFiles(srcRoot, compileRoot) {
   const out = [];
-  function walk(dir, rel) {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (e.name.startsWith('.')) continue;
-      if (e.isDirectory() && SKIP_DIRS.has(e.name)) continue;
-      const full = path.join(dir, e.name);
-      const r = rel ? path.join(rel, e.name) : e.name;
-      if (e.isDirectory()) walk(full, r);
-      else if (e.name.endsWith('.lean')) out.push(r);
+  if (compileRoot) {
+    const rootDir = path.join(srcRoot, compileRoot);
+    const rootFile = path.join(srcRoot, compileRoot + '.lean');
+    if (fs.existsSync(rootFile)) out.push(compileRoot + '.lean');
+    if (fs.existsSync(rootDir)) {
+      function walk(dir, rel) {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (e.name.startsWith('.')) continue;
+          const full = path.join(dir, e.name);
+          const r = rel ? path.join(rel, e.name) : e.name;
+          if (e.isDirectory()) walk(full, r);
+          else if (e.name.endsWith('.lean')) out.push(r);
+        }
+      }
+      walk(rootDir, compileRoot);
     }
+  } else {
+    function walk(dir, rel) {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.name.startsWith('.')) continue;
+        if (e.isDirectory() && SKIP_DIRS_GLOBAL.has(e.name)) continue;
+        const full = path.join(dir, e.name);
+        const r = rel ? path.join(rel, e.name) : e.name;
+        if (e.isDirectory()) walk(full, r);
+        else if (e.name.endsWith('.lean')) out.push(r);
+      }
+    }
+    walk(srcRoot, '');
   }
-  walk(srcRoot, '');
   return out.sort();
 }
 
@@ -212,8 +235,17 @@ for (const pkg of packagesToBuild) {
   const outLib = OUT_DIR;
   fs.mkdirSync(outLib, { recursive: true });
 
-  const leanFiles = listLeanFiles(srcRoot);
-  console.log(`[${pkgName}] ${leanFiles.length} .lean files under ${srcRoot}`);
+  // compileRoot defaults to the package name with an uppercased first
+  // letter (lake convention: package "batteries" -> namespace "Batteries").
+  // Override per-dep in the pegs file via { compileRoot: "Foo" } to support
+  // exceptions (e.g. lean4-cli's package "Cli" matches its namespace
+  // exactly with no case change).
+  const compileRoot = pkg.compileRoot ||
+    (pkgName === pkgName.toLowerCase()
+      ? pkgName.charAt(0).toUpperCase() + pkgName.slice(1)
+      : pkgName);
+  const leanFiles = listLeanFiles(srcRoot, compileRoot);
+  console.log(`[${pkgName}] compileRoot=${compileRoot} ${leanFiles.length} .lean files under ${srcRoot}`);
 
   // Build per-package dep graph from imports. Only include imports that
   // resolve to a module in this package's own .lean files; cross-package
