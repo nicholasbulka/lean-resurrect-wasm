@@ -9,6 +9,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -89,6 +90,56 @@ function walk(dir, root, filter, acc) {
     }
   }
   return acc;
+}
+
+// Build a single packed binary of all oleans for given prefixes.
+// Format (all little-endian):
+//   u32 count
+//   per entry:
+//     u16 pathLen   (UTF-8 bytes)
+//     pathBytes
+//     u32 dataLen
+//     dataBytes
+// One fetch instead of 7715 round-trips through the browser cache.
+let bundleCache = null;     // raw concatenation
+let bundleGzCache = null;   // gzipped (precomputed lazily on first gz request)
+function getOleanBundle() {
+  if (bundleCache) return bundleCache;
+  const STAGE_PREFIXES = ['Init', 'Std', 'Lean'];
+  const manifest = getManifest();
+  const entries = manifest.entries.filter((e) => {
+    const seg = e.path.split('/')[0].replace(/\.olean(\.private|\.server)?$|\.ir$/, '');
+    return STAGE_PREFIXES.includes(seg);
+  });
+  const leanLib = path.join(VENDOR, 'lib', 'lean');
+  const parts = [];
+  const countBuf = Buffer.alloc(4);
+  countBuf.writeUInt32LE(entries.length, 0);
+  parts.push(countBuf);
+  for (const e of entries) {
+    const data = fs.readFileSync(path.join(leanLib, e.path));
+    const pathBuf = Buffer.from(e.path, 'utf8');
+    const pathLen = Buffer.alloc(2);
+    pathLen.writeUInt16LE(pathBuf.length, 0);
+    const dataLen = Buffer.alloc(4);
+    dataLen.writeUInt32LE(data.length, 0);
+    parts.push(pathLen, pathBuf, dataLen, data);
+  }
+  bundleCache = Buffer.concat(parts);
+  console.log('[tests-server] olean bundle: ' + entries.length + ' files, ' + (bundleCache.length / 1048576).toFixed(1) + ' MB');
+  return bundleCache;
+}
+function getOleanBundleGz() {
+  if (bundleGzCache) return bundleGzCache;
+  const raw = getOleanBundle();
+  const t0 = Date.now();
+  // level 1 = fastest, still ~30% reduction on this binary content.
+  // The bundle is gigabyte-class so level 6 (default) takes 30+ seconds
+  // on first request; level 1 takes ~3-5s and the difference in size
+  // is small for already-binary data.
+  bundleGzCache = zlib.gzipSync(raw, { level: 1 });
+  console.log('[tests-server] olean bundle gzipped: ' + (bundleGzCache.length / 1048576).toFixed(1) + ' MB in ' + (Date.now() - t0) + 'ms');
+  return bundleGzCache;
 }
 
 // Cache the manifest — regenerating on every request on 512 MB of oleans is slow.
@@ -326,6 +377,22 @@ const srv = http.createServer((req, res) => {
     const body = JSON.stringify(getManifest());
     res.writeHead(200, headers(Buffer.byteLength(body), 'application/json; charset=utf-8', url.pathname));
     res.end(body);
+    return;
+  }
+  if (url.pathname === '/vendor/oleans.bundle') {
+    const accept = String(req.headers['accept-encoding'] || '');
+    if (accept.includes('gzip')) {
+      const b = getOleanBundleGz();
+      const h = headers(b.length, 'application/octet-stream', url.pathname);
+      h['Content-Encoding'] = 'gzip';
+      h['Vary'] = 'Accept-Encoding';
+      res.writeHead(200, h);
+      res.end(b);
+    } else {
+      const b = getOleanBundle();
+      res.writeHead(200, headers(b.length, 'application/octet-stream', url.pathname));
+      res.end(b);
+    }
     return;
   }
   // React IDE (built): / and /assets/* served from packages/ide/dist.

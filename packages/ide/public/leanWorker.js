@@ -189,52 +189,35 @@ async function init(leanJsUrl, manifestUrl, cache) {
     console.log('[leanWorker] reusing ' + oleanBytes.length + ' oleans from main-thread cache');
     postProgress({ phase: 'fetching-oleans', current: oleanBytes.length, total: oleanBytes.length, message: 'oleans cached' });
   } else {
-    postProgress({ phase: 'fetching-manifest', message: 'fetching olean manifest' });
-    const manifest = await (await fetch(manifestUrl)).json();
-    // v4.27 module system: stage Init/Std/Lean's full file family
-    // (.olean, .server, .private, .ir) plus all per-module variants. Without
-    // all four file types, Lean errors with "missing data file" / "missing
-    // IR data file". User code that touches Std (e.g., HashMap, Array.size)
-    // or Lean (e.g., elaboration metadata) needs those staged too. We skip
-    // Lake/LakeMain/Leanc since they're build-tool internals.
-    const STAGE_PREFIXES = ['Init', 'Std', 'Lean'];
-    initEntries = manifest.entries.filter((e) => {
-      const seg = e.path.split('/')[0].replace(/\.olean(\.private|\.server)?$|\.ir$/, '');
-      return STAGE_PREFIXES.includes(seg);
-    });
-    console.log('[leanWorker] manifest: ' + initEntries.length + ' entries (Init+Std+Lean)');
-
-    postProgress({ phase: 'fetching-oleans', current: 0, total: initEntries.length, message: 'downloading stdlib oleans' });
-    const CONCURRENCY = 8;
-    oleanBytes = new Array(initEntries.length);
-    let done = 0;
-    let nextIdx = 0;
-    async function fetchWorker() {
-      while (true) {
-        const i = nextIdx++;
-        if (i >= initEntries.length) return;
-        const e = initEntries[i];
-        let bytes = null;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            const r = await fetch(manifest.root + '/' + e.path);
-            if (!r.ok) throw new Error('http ' + r.status + ' ' + e.path);
-            bytes = new Uint8Array(await r.arrayBuffer());
-            break;
-          } catch (err) {
-            if (attempt === 2) throw err;
-            await new Promise((res) => setTimeout(res, 200 * (attempt + 1)));
-          }
-        }
-        oleanBytes[i] = { path: e.path, bytes };
-        done += 1;
-        if (done % 25 === 0 || done === initEntries.length) {
-          postProgress({ phase: 'fetching-oleans', current: done, total: initEntries.length, message: 'downloading stdlib oleans' });
-        }
+    // One fetch of /vendor/oleans.bundle (a packed binary of all
+    // Init/Std/Lean files) instead of 7715 individual requests. Per-
+    // request overhead × 7715 (even from cache) was a major cost; one
+    // request is one cache hit, one parse pass.
+    // Format: u32 count; per entry: u16 pathLen, pathBytes, u32 dataLen, dataBytes.
+    postProgress({ phase: 'fetching-oleans', message: 'downloading olean bundle' });
+    const bundleUrl = '/vendor/oleans.bundle';
+    const r = await fetch(bundleUrl);
+    if (!r.ok) throw new Error('bundle fetch failed: ' + r.status);
+    const buf = new Uint8Array(await r.arrayBuffer());
+    console.log('[leanWorker] bundle: ' + (buf.byteLength / 1048576).toFixed(1) + ' MB');
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const dec = new TextDecoder();
+    const count = dv.getUint32(0, true);
+    let off = 4;
+    oleanBytes = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const pathLen = dv.getUint16(off, true); off += 2;
+      const path = dec.decode(buf.subarray(off, off + pathLen)); off += pathLen;
+      const dataLen = dv.getUint32(off, true); off += 4;
+      const bytes = buf.subarray(off, off + dataLen); off += dataLen;
+      oleanBytes[i] = { path, bytes };
+      if ((i & 1023) === 0) {
+        postProgress({ phase: 'fetching-oleans', current: i, total: count, message: 'unpacking olean bundle' });
       }
     }
-    await Promise.all(Array.from({ length: CONCURRENCY }, fetchWorker));
-    console.log('[leanWorker] fetched ' + oleanBytes.length + ' oleans');
+    initEntries = oleanBytes;
+    console.log('[leanWorker] unpacked ' + oleanBytes.length + ' oleans from bundle');
+    postProgress({ phase: 'fetching-oleans', current: count, total: count, message: 'oleans ready' });
   }
 
   // locateFile resolves "lean.wasm" against the directory of lean.js.
