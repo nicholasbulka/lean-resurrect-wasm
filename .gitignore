@@ -75,3 +75,6 @@ Thumbs.db
 # local settings are not. Also exclude per-user memory + project state.
 .claude/
 .tmp-test/
+
+# wasm-deps build scratch (clones + intermediate artifacts)
+.build-cache/

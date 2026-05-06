@@ -29,7 +29,6 @@ if [ -z "${LIBRARY_KEY:-}" ]; then
 fi
 
 require_dir() { [ -d "$1" ] || { echo "[build-wasm-deps] required mount missing: $1" >&2; exit 2; } }
-require_dir "$PEGS_FILE/.." || true
 [ -f "$PEGS_FILE" ] || { echo "[build-wasm-deps] pegs file missing: $PEGS_FILE" >&2; exit 2; }
 require_dir "$PREFLIGHT"
 require_dir "$WASM_LEAN_ROOT"
@@ -159,10 +158,36 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
   BUNDLE_BYTES=0
   BUNDLE_SHA="(none)"
   OLEAN_COUNT=0
+elif [ "$CROSS_COMPILE_PATH" = "manual" ]; then
+  log INFO "running manual cross-compile (per-file lean invocations)"
+  BUILD_OUT="$OUT_DIR/build"
+  mkdir -p "$BUILD_OUT"
+  if PEGS_FILE="$PEGS_FILE" \
+     LIBRARY_KEY="$LIBRARY_KEY" \
+     SCRATCH="$SCRATCH" \
+     PREFLIGHT="$PREFLIGHT" \
+     WASM_LEAN_ROOT="$WASM_LEAN_ROOT" \
+     OUT_DIR="$BUILD_OUT" \
+     ABORT_ON_FAIL="${ABORT_ON_FAIL:-0}" \
+     node /usr/local/lib/cross-compile-wasm.js 2>&1 | tee -a "$BUILDLOG"; then
+    log INFO "cross-compile succeeded"
+    log INFO "packing oleans into $OUT_DIR/oleans.bundle"
+    node /usr/local/lib/pack-bundle.js "$BUILD_OUT" "$OUT_DIR/oleans.bundle" 2>&1 | tee -a "$BUILDLOG"
+    BUNDLE_BYTES=$(stat -c%s "$OUT_DIR/oleans.bundle" 2>/dev/null || stat -f%z "$OUT_DIR/oleans.bundle")
+    BUNDLE_SHA=$(sha256sum "$OUT_DIR/oleans.bundle" | awk '{print $1}')
+    OLEAN_COUNT=$(find "$BUILD_OUT" -name '*.olean' | wc -l | tr -d ' ')
+    BUILD_STATUS="success"
+    log INFO "bundle: $OLEAN_COUNT oleans, $BUNDLE_BYTES bytes, sha256=$BUNDLE_SHA"
+  else
+    log ERROR "cross-compile failed; see $BUILDLOG and $BUILD_OUT/cross-compile-report.json"
+    BUILD_STATUS="compile-failed"
+    BUNDLE_BYTES=0
+    BUNDLE_SHA="(none)"
+    OLEAN_COUNT=$(find "$BUILD_OUT" -name '*.olean' 2>/dev/null | wc -l | tr -d ' ')
+  fi
 else
-  log ERROR "build step not yet implemented (CROSS_COMPILE_PATH=$CROSS_COMPILE_PATH)"
-  log ERROR "the deps are cloned at $SCRATCH; the operator can attempt the manual build"
-  log ERROR "and pack the resulting oleans into $OUT_DIR/oleans.bundle"
+  log ERROR "CROSS_COMPILE_PATH=$CROSS_COMPILE_PATH not implemented"
+  log ERROR "supported: manual (default). qemu-lake and xbuild are placeholders."
   BUILD_STATUS="not-implemented"
   BUNDLE_BYTES=0
   BUNDLE_SHA="(none)"

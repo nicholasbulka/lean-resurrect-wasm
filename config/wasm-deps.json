@@ -93,6 +93,18 @@
         }
       ]
     },
+    "cli-only": {
+      "description": "Smallest meaningful smoke target: build leanprover/lean4-cli alone. Used to validate the cross-compile pipeline end-to-end before attempting the full Mathlib transitive set.",
+      "topLevel": "Cli",
+      "cdnSlug": "cli-only",
+      "deps": [
+        {
+          "name": "Cli",
+          "url": "https://github.com/leanprover/lean4-cli",
+          "rev": "55c37290ff6186e2e965d68cf853a57c0702db82"
+        }
+      ]
+    },
     "li-criterion": {
       "description": "Li's Criterion formalization. Depends on mathlib-v4.27.0-2026-04 (must be built first).",
       "topLevel": "LiCriterion",

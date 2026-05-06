@@ -1,0 +1,97 @@
+{
+  "buildId": "20260506T180006Z-1",
+  "libraryKey": "cli-only",
+  "cdnSlug": "cli-only",
+  "topLevel": "Cli",
+  "startedAt": "2026-05-06T18:00:06Z",
+  "endedAt": "2026-05-06T18:00:08Z",
+  "durationSec": 2,
+  "crossCompilePath": "manual",
+  "buildStatus": "dry-run",
+  "bundle": {
+    "sha256": "(none)",
+    "byteCount": 0,
+    "oleanCount": 0
+  },
+  "validation": {
+    "libraryKey": "cli-only",
+    "leanVersion": "v4.27.0",
+    "leanGithash": "db93fe1608548721853390a10cd40580fe7d22ae",
+    "leanReleaseDate": "2026-04-15",
+    "topLevel": "Cli",
+    "cdnSlug": "cli-only",
+    "dependsOn": [],
+    "depCount": 1,
+    "depCommitDates": {},
+    "errors": [],
+    "warnings": [
+      "dep \"Cli\" has no commitDate and isn't cloned; cannot verify date overlap"
+    ],
+    "flags": {
+      "allowNonhashRev": false,
+      "allowDateViolation": false,
+      "strict": false
+    }
+  },
+  "deps": [
+    {
+      "name": "Cli",
+      "url": "https://github.com/leanprover/lean4-cli",
+      "rev": "55c37290ff6186e2e965d68cf853a57c0702db82",
+      "commitDate": "2026-01-24T10:29:19+11:00",
+      "kind": "git"
+    }
+  ],
+  "events": [
+    {
+      "ts": "2026-05-06T18:00:06Z",
+      "level": "INFO",
+      "msg": "library=cli-only slug=cli-only topLevel=Cli buildId=20260506T180006Z-1"
+    },
+    {
+      "ts": "2026-05-06T18:00:06Z",
+      "level": "INFO",
+      "msg": "ALLOW_NONHASH_REV=0 ALLOW_DATE_VIOLATION=0 STRICT=0 DRY_RUN=1 FORCE_REBUILD=0"
+    },
+    {
+      "ts": "2026-05-06T18:00:06Z",
+      "level": "INFO",
+      "msg": "validating pegs via /usr/local/lib/validate-pegs.js"
+    },
+    {
+      "ts": "2026-05-06T18:00:06Z",
+      "level": "INFO",
+      "msg": "validation passed; report at /out/projects/cli-only/build-logs/20260506T180006Z-1/validation-report.json"
+    },
+    {
+      "ts": "2026-05-06T18:00:06Z",
+      "level": "INFO",
+      "msg": "cloning deps into /cache/cli-only"
+    },
+    {
+      "ts": "2026-05-06T18:00:06Z",
+      "level": "INFO",
+      "msg": "[Cli] git clone https://github.com/leanprover/lean4-cli"
+    },
+    {
+      "ts": "2026-05-06T18:00:07Z",
+      "level": "INFO",
+      "msg": "[Cli] checkout 55c37290ff6186e2e965d68cf853a57c0702db82 (was 13567aed1ac4f12aea9484178e07e51f8c9f7658)"
+    },
+    {
+      "ts": "2026-05-06T18:00:08Z",
+      "level": "INFO",
+      "msg": "[Cli] commit_date=2026-01-24T10:29:19+11:00"
+    },
+    {
+      "ts": "2026-05-06T18:00:08Z",
+      "level": "INFO",
+      "msg": "CROSS_COMPILE_PATH=manual"
+    },
+    {
+      "ts": "2026-05-06T18:00:08Z",
+      "level": "WARN",
+      "msg": "DRY_RUN=1 — skipping build step"
+    }
+  ]
+}

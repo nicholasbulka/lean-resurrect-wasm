@@ -89,13 +89,26 @@ globalThis.Module = {
 
     // Stage user-supplied input dir from the cwd up to the WASM FS so
     // arguments referring to host paths line up with realpath'd cwd.
-    try {
-      const cwd = fs.realpathSync(process.cwd());
-      if (cwd !== INSTALL && !cwd.startsWith(INSTALL + '/')) {
-        FS.mkdirTree(cwd);
-        FS.mount(Module.NODEFS, { root: cwd }, cwd);
+    // Plus any extra dirs the caller wants reachable (e.g. an output
+    // directory outside the cwd subtree). LEAN_EXTRA_MOUNTS is a
+    // ':'-separated list of host paths.
+    const mountedRoots = new Set();
+    function mountIfNew(p) {
+      try {
+        const real = fs.realpathSync(p);
+        if (real === INSTALL || real.startsWith(INSTALL + '/')) return;
+        if (mountedRoots.has(real)) return;
+        FS.mkdirTree(real);
+        FS.mount(Module.NODEFS, { root: real }, real);
+        mountedRoots.add(real);
+      } catch (_) {}
+    }
+    try { mountIfNew(process.cwd()); } catch (_) {}
+    if (process.env.LEAN_EXTRA_MOUNTS) {
+      for (const m of process.env.LEAN_EXTRA_MOUNTS.split(':')) {
+        if (m) mountIfNew(m);
       }
-    } catch (_) {}
+    }
 
     // Olean-on-demand: if LEAN_RESOLVER_JS is set, install an FS interceptor
     // that calls resolver.resolve(path) for missing *.olean.

@@ -1,0 +1,20 @@
+{
+  "libraryKey": "cli-only",
+  "leanVersion": "v4.27.0",
+  "leanGithash": "db93fe1608548721853390a10cd40580fe7d22ae",
+  "leanReleaseDate": "2026-04-15",
+  "topLevel": "Cli",
+  "cdnSlug": "cli-only",
+  "dependsOn": [],
+  "depCount": 1,
+  "depCommitDates": {},
+  "errors": [],
+  "warnings": [
+    "dep \"Cli\" has no commitDate and isn't cloned; cannot verify date overlap"
+  ],
+  "flags": {
+    "allowNonhashRev": false,
+    "allowDateViolation": false,
+    "strict": false
+  }
+}

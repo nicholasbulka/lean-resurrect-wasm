@@ -61,6 +61,8 @@ WORKDIR /work
 # Bake the entrypoint in. Mounted volumes (/config, /preflight, /wasm-lean,
 # /out, /cache) are expected at runtime — no defaults baked in.
 COPY docker/build-wasm-deps-entry.sh /usr/local/bin/build-wasm-deps-entry.sh
+COPY docker/cross-compile-wasm.js /usr/local/lib/cross-compile-wasm.js
+COPY docker/pack-bundle.js /usr/local/lib/pack-bundle.js
 COPY scripts/lib/validate-pegs.js /usr/local/lib/validate-pegs.js
 RUN chmod +x /usr/local/bin/build-wasm-deps-entry.sh
 

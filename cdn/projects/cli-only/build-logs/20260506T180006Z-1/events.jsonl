@@ -1,0 +1,12 @@
+{"ts":"2026-05-06T18:00:06Z","level":"INFO","msg":"library=cli-only slug=cli-only topLevel=Cli buildId=20260506T180006Z-1"}
+{"ts":"2026-05-06T18:00:06Z","level":"INFO","msg":"ALLOW_NONHASH_REV=0 ALLOW_DATE_VIOLATION=0 STRICT=0 DRY_RUN=1 FORCE_REBUILD=0"}
+{"ts":"2026-05-06T18:00:06Z","level":"INFO","msg":"validating pegs via /usr/local/lib/validate-pegs.js"}
+{"ts":"2026-05-06T18:00:06Z","level":"INFO","msg":"validation passed; report at /out/projects/cli-only/build-logs/20260506T180006Z-1/validation-report.json"}
+{"ts":"2026-05-06T18:00:06Z","level":"INFO","msg":"cloning deps into /cache/cli-only"}
+{"ts":"2026-05-06T18:00:06Z","level":"INFO","msg":"[Cli] git clone https://github.com/leanprover/lean4-cli"}
+{"ts":"2026-05-06T18:00:07Z","level":"INFO","msg":"[Cli] checkout 55c37290ff6186e2e965d68cf853a57c0702db82 (was 13567aed1ac4f12aea9484178e07e51f8c9f7658)"}
+{"ts":"2026-05-06T18:00:08Z","level":"INFO","msg":"[Cli] commit_date=2026-01-24T10:29:19+11:00"}
+{"ts":"2026-05-06T18:00:08Z","level":"INFO","msg":"CROSS_COMPILE_PATH=manual"}
+{"ts":"2026-05-06T18:00:08Z","level":"WARN","msg":"DRY_RUN=1 — skipping build step"}
+{"ts":"2026-05-06T18:00:09Z","level":"INFO","msg":"manifest written to /out/projects/cli-only/build-logs/20260506T180006Z-1/build-manifest.json"}
+{"ts":"2026-05-06T18:00:09Z","level":"INFO","msg":"duration: 2s, status: dry-run"}
