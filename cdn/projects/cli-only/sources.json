@@ -3,7 +3,7 @@
   "files": [
     {
       "path": "Main.lean",
-      "content": "import Cli\n\nopen Cli\n\n#check @Cmd\n#check @validate\n"
+      "content": "-- The wasm32-built Cli olean is shipped in this project's oleans bundle.\n-- These #checks resolve names from a real, non-stub built dependency,\n-- proving the cross-compile -> CDN -> browser pipeline end-to-end.\n\nimport Cli\n\nopen Cli\n\n#check @Cmd\n#check @Cmd.run\n#check @ModuleName\n"
     }
   ]
 }
