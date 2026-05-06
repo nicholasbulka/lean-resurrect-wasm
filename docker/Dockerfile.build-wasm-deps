@@ -1,0 +1,73 @@
+# Cross-compile a pegged Lean library set to wasm32 oleans.
+#
+# Image responsibilities:
+#   - Carry the wasm32 lean toolchain (vendored from this repo at build time).
+#   - Provide host-arch lake (for orchestration / dependency-graph traversal).
+#   - Provide git, jq, node — the orchestrator is JS for trace/manifest fidelity.
+#
+# The image does NOT bake in a specific peg set; pegs come in as a mounted
+# config/wasm-deps.json + LIBRARY_KEY env var at run time. One image, many
+# library sets.
+#
+# The cross-compile mechanism itself (the actual lean invocations) is the
+# open question — see CROSS_COMPILE_PATH in docker/build-wasm-deps-entry.sh.
+#
+# Build:
+#   docker build -f docker/Dockerfile.build-wasm-deps -t lean-wasm-build:v4.27.0 .
+#
+# Run (from repo root):
+#   docker run --rm \
+#     -v $(pwd)/cdn:/out \
+#     -v $(pwd)/.build-cache:/cache \
+#     -v $(pwd)/config:/config:ro \
+#     -v $(pwd)/preflight:/preflight:ro \
+#     -v $(pwd)/vendor/lean-linux_wasm32:/wasm-lean:ro \
+#     -e LIBRARY_KEY=mathlib-v4.27.0-2026-04 \
+#     lean-wasm-build:v4.27.0
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    curl \
+    jq \
+    bash \
+    coreutils \
+    findutils \
+    procps \
+    xxd \
+    build-essential \
+    python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Node 20 (matches the host's tooling era; needed to run preflight/trace_fs.js).
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Native lake for orchestrating dep cloning + (eventually) build invocation.
+# Pulled from the official elan toolchain installer; pegged to v4.27.0 so the
+# native lake matches our wasm32 lean's manifest format.
+RUN curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+    | sh -s -- -y --default-toolchain leanprover/lean4:v4.27.0
+ENV PATH=/root/.elan/bin:$PATH
+RUN lean --version && lake --version
+
+WORKDIR /work
+
+# Bake the entrypoint in. Mounted volumes (/config, /preflight, /wasm-lean,
+# /out, /cache) are expected at runtime — no defaults baked in.
+COPY docker/build-wasm-deps-entry.sh /usr/local/bin/build-wasm-deps-entry.sh
+COPY scripts/lib/validate-pegs.js /usr/local/lib/validate-pegs.js
+RUN chmod +x /usr/local/bin/build-wasm-deps-entry.sh
+
+ENV PEGS_FILE=/config/wasm-deps.json \
+    PREFLIGHT=/preflight \
+    WASM_LEAN_ROOT=/wasm-lean \
+    OUT_ROOT=/out \
+    CACHE_ROOT=/cache
+
+ENTRYPOINT ["/usr/local/bin/build-wasm-deps-entry.sh"]

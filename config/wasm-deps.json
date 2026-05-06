@@ -25,6 +25,9 @@
       "gmp": false,
       "multiThread": true,
       "proxyToPthread": true
+    },
+    "releaseDates": {
+      "v4.27.0": "2026-04-15"
     }
   },
   "libraries": {
@@ -99,8 +102,8 @@
         {
           "name": "LiCriterion",
           "url": "local://liCriterionLean4Web/services/lean4web/Projects/LiCriterion",
-          "rev": "HEAD",
-          "comment": "Local checkout — replace with public GitHub URL once published."
+          "rev": "0000000000000000000000000000000000000000",
+          "comment": "Local checkout — `rev` is a placeholder (validator skips local:// URLs from rev/date checks). Replace with a real public-repo url + commit hash once published."
         },
         {
           "name": "PrimeNumberTheoremAnd",
