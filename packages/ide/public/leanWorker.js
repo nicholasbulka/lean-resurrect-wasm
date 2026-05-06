@@ -21,19 +21,26 @@
 // itself does `var Module = typeof Module != "undefined" ? Module : {}`, and
 // any prior lexical `let Module` would collide ("Identifier already declared").
 // Read/write via `self.Module` instead.
-let leanLoadedPromise = null;
-let initEntries = null;
+let __leanInitPromise = null;
 
 // --- helpers ---------------------------------------------------------------
 
-function postProgress(p) {
+function __leanPostProgress(p) {
   postMessage({ type: 'progress', ...p });
 }
+// Note: above and below, helpers prefixed with `__lean` to avoid shadowing
+// or being shadowed by names declared inside the lean.js bundle we
+// importScripts. emcc-generated code uses bare names liberally
+// (e.g. `init`, `compile`, `setupModule`, `Module`, `ENV`).
 
 // Pose as Node so Lean's CLI EM_ASM passes its `process.release.name === "node"`
 // check. We don't try to run Node-specific FS code; preRun stages everything
 // in MEMFS instead.
-function installNodeShim() {
+function __leanInstallNodeShim() {
+  // Function rename: was `installNodeShim`. Renamed for two reasons:
+  // (1) avoids any chance of being shadowed by a like-named helper
+  // inside lean.js, (2) signals that this shim is for our Lean WASM
+  // bring-up rather than a general-purpose Node polyfill.
   if (typeof self.process === 'undefined') {
     self.process = {
       release: { name: 'node' },
@@ -53,7 +60,7 @@ function installNodeShim() {
   }
 }
 
-function setupModule(leanJsBaseUrl, leanJsUrl, oleanBytes) {
+function __leanSetupModule(leanJsBaseUrl, leanJsUrl, oleanBytes) {
   self.Module = {
     arguments: [],
     thisProgram: '/lean',
@@ -144,7 +151,7 @@ function setupModule(leanJsBaseUrl, leanJsUrl, oleanBytes) {
   // != "undefined" ? Module : {}` will pick it up during importScripts.
 }
 
-function waitForCalledRun() {
+function __leanAwaitCalledRun() {
   let lastLog = 0;
   return new Promise((resolve) => {
     const check = () => {
@@ -176,7 +183,7 @@ function waitForCalledRun() {
 
 // --- init: download lean.js + manifest + Init oleans, instantiate WASM ----
 
-async function init(leanJsUrl, manifestUrl, cache) {
+async function __leanInitRuntime(leanJsUrl, manifestUrl, cache) {
   cache = cache || {};
   const usedCache = {
     wasmModule: !!cache.cachedWasmModule,
@@ -184,7 +191,7 @@ async function init(leanJsUrl, manifestUrl, cache) {
     leanJsSource: !!cache.cachedLeanJsSource,
   };
   console.log('[leanWorker] init: leanJsUrl=' + leanJsUrl + ' cache=' + JSON.stringify(usedCache));
-  installNodeShim();
+  __leanInstallNodeShim();
   // Force Lean's std::thread::hardware_concurrency() (which maps to
   // navigator.hardwareConcurrency) to 1 so its task manager doesn't try
   // to spawn 8+ pthread workers from inside the lean_main pthread —
@@ -211,10 +218,10 @@ async function init(leanJsUrl, manifestUrl, cache) {
   const oleansPromise = (async () => {
     if (cache.cachedOleans) {
       console.log('[leanWorker] oleans: cached (' + cache.cachedOleans.length + ' entries)');
-      postProgress({ phase: 'fetching-oleans', current: cache.cachedOleans.length, total: cache.cachedOleans.length, message: 'oleans cached' });
+      __leanPostProgress({ phase: 'fetching-oleans', current: cache.cachedOleans.length, total: cache.cachedOleans.length, message: 'oleans cached' });
       return cache.cachedOleans;
     }
-    postProgress({ phase: 'fetching-oleans', message: 'downloading olean bundle' });
+    __leanPostProgress({ phase: 'fetching-oleans', message: 'downloading olean bundle' });
     const r = await fetch('/vendor/oleans.bundle');
     if (!r.ok) throw new Error('bundle fetch failed: ' + r.status);
     const buf = new Uint8Array(await r.arrayBuffer());
@@ -231,11 +238,11 @@ async function init(leanJsUrl, manifestUrl, cache) {
       const bytes = buf.subarray(off, off + dataLen); off += dataLen;
       out[i] = { path: p, bytes };
       if ((i & 1023) === 0) {
-        postProgress({ phase: 'fetching-oleans', current: i, total: count, message: 'unpacking olean bundle' });
+        __leanPostProgress({ phase: 'fetching-oleans', current: i, total: count, message: 'unpacking olean bundle' });
       }
     }
     console.log('[leanWorker] unpacked ' + out.length + ' oleans from bundle');
-    postProgress({ phase: 'fetching-oleans', current: count, total: count, message: 'oleans ready' });
+    __leanPostProgress({ phase: 'fetching-oleans', current: count, total: count, message: 'oleans ready' });
     return out;
   })();
 
@@ -283,7 +290,7 @@ async function init(leanJsUrl, manifestUrl, cache) {
       console.log('[leanWorker] wasm module: cached');
       return cache.cachedWasmModule;
     }
-    postProgress({ phase: 'loading-wasm', message: 'compiling lean.wasm' });
+    __leanPostProgress({ phase: 'loading-wasm', message: 'compiling lean.wasm' });
     console.log('[leanWorker] compileStreaming(' + wasmUrl + ')...');
     const t0 = Date.now();
     const mod = await WebAssembly.compileStreaming(fetch(wasmUrl));
@@ -294,10 +301,9 @@ async function init(leanJsUrl, manifestUrl, cache) {
   const [oleanBytes, src, wasmModule] = await Promise.all([
     oleansPromise, leanJsSourcePromise, wasmModulePromise,
   ]);
-  initEntries = oleanBytes;
 
-  setupModule(baseUrl, leanJsUrl, oleanBytes);
-  postProgress({ phase: 'loading-wasm', message: 'instantiating WASM runtime' });
+  __leanSetupModule(baseUrl, leanJsUrl, oleanBytes);
+  __leanPostProgress({ phase: 'loading-wasm', message: 'instantiating WASM runtime' });
   // Build a Blob URL so both this worker AND the emcc-spawned pthread
   // workers load the patched source. We MUST give pthread workers the
   // patched URL too, because the EM_ASM Node-check fires inside the
@@ -350,8 +356,8 @@ async function init(leanJsUrl, manifestUrl, cache) {
   importScripts(blobUrl);
   console.log('[leanWorker] importScripts done');
 
-  postProgress({ phase: 'loading-wasm', message: 'instantiating WASM runtime' });
-  await waitForCalledRun();
+  __leanPostProgress({ phase: 'loading-wasm', message: 'instantiating WASM runtime' });
+  await __leanAwaitCalledRun();
   console.log('[leanWorker] calledRun=true; callMain typeof=' + typeof self.Module.callMain + ' _main typeof=' + typeof self.Module._main);
 
   if (typeof self.Module.callMain !== 'function' && typeof self.Module._main !== 'function') {
@@ -386,7 +392,7 @@ async function init(leanJsUrl, manifestUrl, cache) {
 
 // --- per-compile entry: re-arm output capture, write source, run main -----
 
-async function compile(requestId, source, libraryPaths) {
+async function __leanRunCompile(requestId, source, libraryPaths) {
   const M = self.Module;
   if (!M || !M.calledRun) {
     postMessage({ type: 'error', requestId, error: 'leanWorker: WASM not initialized' });
@@ -475,7 +481,7 @@ async function compile(requestId, source, libraryPaths) {
     if (self.__leanPthreadBuf.stdout) buffers.stdout += self.__leanPthreadBuf.stdout;
     if (self.__leanPthreadBuf.stderr) buffers.stderr += self.__leanPthreadBuf.stderr;
   }
-  const { diagnostics, residualStdout } = parseJsonDiagnostics(buffers.stdout);
+  const { diagnostics, residualStdout } = __leanParseJsonDiagnostics(buffers.stdout);
   postMessage({
     type: 'result',
     requestId,
@@ -489,7 +495,7 @@ async function compile(requestId, source, libraryPaths) {
   });
 }
 
-function parseJsonDiagnostics(stdout) {
+function __leanParseJsonDiagnostics(stdout) {
   const diagnostics = [];
   const residual = [];
   for (const line of stdout.split('\n')) {
@@ -514,8 +520,8 @@ self.onmessage = (event) => {
   const msg = event.data;
   if (!msg || typeof msg !== 'object') return;
   if (msg.type === 'init') {
-    if (leanLoadedPromise) return;
-    leanLoadedPromise = init(msg.leanJsUrl, msg.manifestUrl, {
+    if (__leanInitPromise) return;
+    __leanInitPromise = __leanInitRuntime(msg.leanJsUrl, msg.manifestUrl, {
       cachedWasmModule: msg.cachedWasmModule,
       cachedOleans: msg.cachedOleans,
       cachedLeanJsSource: msg.cachedLeanJsSource,
@@ -526,12 +532,12 @@ self.onmessage = (event) => {
   }
   if (msg.type === 'compile') {
     (async () => {
-      if (!leanLoadedPromise) {
+      if (!__leanInitPromise) {
         postMessage({ type: 'error', requestId: msg.requestId, error: 'leanWorker: send init before compile' });
         return;
       }
-      await leanLoadedPromise;
-      compile(msg.requestId, msg.source, msg.libraryPaths);
+      await __leanInitPromise;
+      __leanRunCompile(msg.requestId, msg.source, msg.libraryPaths);
     })();
     return;
   }
