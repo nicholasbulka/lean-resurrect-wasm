@@ -1,0 +1,9 @@
+{
+  "name": "cli-only",
+  "files": [
+    {
+      "path": "Main.lean",
+      "content": "import Cli\n\nopen Cli\n\n#check @Cmd\n#check @validate\n"
+    }
+  ]
+}

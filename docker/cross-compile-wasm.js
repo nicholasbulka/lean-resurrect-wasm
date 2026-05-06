@@ -29,12 +29,17 @@ const required = ['PEGS_FILE', 'LIBRARY_KEY', 'SCRATCH', 'PREFLIGHT', 'WASM_LEAN
 for (const k of required) {
   if (!process.env[k]) { console.error('[cross-compile] missing env:', k); process.exit(2); }
 }
-const PEGS_FILE      = process.env.PEGS_FILE;
+// realpath everything so symlinks (notably macOS /tmp -> /private/tmp)
+// don't desync host paths from MEMFS mount points. Lean WASM writes to
+// the literal path string we pass it; the NODEFS mount uses realpath.
+const PEGS_FILE      = fs.realpathSync(process.env.PEGS_FILE);
 const LIBRARY_KEY    = process.env.LIBRARY_KEY;
-const SCRATCH        = process.env.SCRATCH;
-const PREFLIGHT      = process.env.PREFLIGHT;
-const WASM_LEAN_ROOT = process.env.WASM_LEAN_ROOT;
-const OUT_DIR        = process.env.OUT_DIR;
+const SCRATCH        = fs.realpathSync(process.env.SCRATCH);
+const PREFLIGHT      = fs.realpathSync(process.env.PREFLIGHT);
+const WASM_LEAN_ROOT = fs.realpathSync(process.env.WASM_LEAN_ROOT);
+// OUT_DIR is the only one we create on demand.
+fs.mkdirSync(process.env.OUT_DIR, { recursive: true });
+const OUT_DIR        = fs.realpathSync(process.env.OUT_DIR);
 const ABORT_ON_FAIL  = process.env.ABORT_ON_FAIL === '1';
 
 const pegs = JSON.parse(fs.readFileSync(PEGS_FILE, 'utf8'));
@@ -166,6 +171,21 @@ const results = {
 // Cumulative LEAN_PATH: every already-built pkg's lib dir.
 const cumulativeLeanPathDirs = [];
 
+// Lean's v4.27 wasm32 build doesn't reliably honor LEAN_PATH from
+// Module.ENV under PROXY_TO_PTHREAD (documented at preflight/trace_fs.js).
+// Workaround: write each compiled olean directly INTO the install-prefix
+// stdlib dir (the one path Lean's init_search_path always reads). Remember
+// what we add so we can harvest the project-specific files into the bundle
+// after the build finishes — and so we can clean up on abnormal exit.
+const STDLIB_DIR = path.join(WASM_LEAN_ROOT, 'lib', 'lean');
+const stagedFiles = new Set();
+process.on('exit', () => {
+  // Best-effort cleanup so an interrupted build doesn't leave artifacts
+  // mixed into the install-prefix. Final harvest copies them out before
+  // exit, so this only fires for files still present (i.e. on failure).
+  for (const f of stagedFiles) { try { fs.unlinkSync(f); } catch (_) {} }
+});
+
 for (const pkg of packagesToBuild) {
   const pkgName = pkg.name;
   const pkgRoot = path.join(SCRATCH, pkgName);
@@ -176,7 +196,12 @@ for (const pkg of packagesToBuild) {
     results.totals.skipped++;
     continue;
   }
-  const outLib = path.join(OUT_DIR, pkgName, 'lib');
+  // outLib for the BUNDLE is OUT_DIR itself — we want a flat module
+  // namespace there (Cli.olean, Cli/Basic.olean, etc), so when the IDE
+  // stages the bundle at /work/lib/lean/* the file paths line up with
+  // module names. Compile-time staging into STDLIB_DIR is what makes
+  // imports resolve while we build.
+  const outLib = OUT_DIR;
   fs.mkdirSync(outLib, { recursive: true });
 
   const leanFiles = listLeanFiles(srcRoot);
@@ -198,17 +223,23 @@ for (const pkg of packagesToBuild) {
     console.warn(`[${pkgName}] ${cycles.length} import cycles detected; broken arbitrarily`);
   }
 
-  // Per-package LEAN_PATH = own outLib (so already-built modules in this
-  // pkg are reachable) + all previously-built packages' outLibs.
-  const leanPathStr = [outLib, ...cumulativeLeanPathDirs].join(':');
+  // LEAN_PATH set to the install-prefix stdlib dir (which is where we
+  // also stage compiled outputs). PROXY_TO_PTHREAD doesn't reliably
+  // honor LEAN_PATH overrides, so this is mostly belt-and-suspenders —
+  // the actual search uses the build's baked-in install-prefix.
+  const leanPathStr = STDLIB_DIR;
 
   const pkgResult = { name: pkgName, srcRoot, fileCount: leanFiles.length, ok: 0, fail: 0, durations: {} };
   for (const mod of modOrder) {
     const relPath = mod.split('.').join('/') + '.lean';
     const srcFile = path.join(srcRoot, relPath);
-    const oleanOut = path.join(outLib, mod.split('.').join('/') + '.olean');
-    const ileanOut = path.join(outLib, mod.split('.').join('/') + '.ilean');
-    fs.mkdirSync(path.dirname(oleanOut), { recursive: true });
+    const modBase = mod.split('.').join('/');
+    // Write into install-prefix so Lean finds it on its baked-in search
+    // path. Track every produced file so we can harvest + clean up.
+    const stageBase = path.join(STDLIB_DIR, modBase);
+    const oleanOut = stageBase + '.olean';
+    const ileanOut = stageBase + '.ilean';
+    fs.mkdirSync(path.dirname(stageBase), { recursive: true });
 
     const t0 = Date.now();
     // The harness mounts cwd into the WASM FS by default so input files
@@ -217,9 +248,24 @@ for (const pkg of packagesToBuild) {
     // and every previously-built outLib via LEAN_EXTRA_MOUNTS — the
     // harness mounts them too.
     const extraMounts = [OUT_DIR, ...cumulativeLeanPathDirs].filter(Boolean).join(':');
+    // Node flags:
+    //   --stack-size=8192        thread stack 8MB (Lean recurses deeply)
+    //   --max-old-space-size=10240  10GB v8 old-space; the WASM heap grows
+    //                            inside this and big elaborations (Std.Data.*,
+    //                            anything pulling Mathlib) routinely cross
+    //                            multi-GB during type checking.
+    // Lean flag:
+    //   -M 8192                  cap Lean's own memory usage at 8GB
     const proc = spawnSync(
       'node',
-      ['--stack-size=8192', path.join(PREFLIGHT, 'trace_fs.js'),
+      ['--stack-size=8192', '--max-old-space-size=10240',
+       path.join(PREFLIGHT, 'trace_fs.js'),
+       '-M', '8192',         // Lean memory cap, MB
+       '-s', '8192',         // Lean thread stack, KB (default 64K is far too
+                             //   small for Mathlib-class elaboration; the
+                             //   "memory access out of bounds" trap on
+                             //   Cli/Basic's first attempt was a stack OOB
+                             //   in Lean's elaborator on Std.Data.TreeSet).
        '-o', oleanOut, '-i', ileanOut, '-R', srcRoot, srcFile],
       {
         cwd: srcRoot,
@@ -238,18 +284,42 @@ for (const pkg of packagesToBuild) {
     if (proc.status === 0) {
       pkgResult.ok++;
       results.totals.compiledOk++;
+      // Track every output the compile produced — Lean v4.27 emits .olean,
+      // .olean.private, .olean.server, .ir, .ilean alongside.
+      for (const ext of ['.olean', '.olean.private', '.olean.server', '.ir', '.ilean']) {
+        const f = stageBase + ext;
+        if (fs.existsSync(f)) {
+          stagedFiles.add(f);
+          // Also copy into the real outLib so the bundle pack picks it up.
+          const dest = path.join(outLib, modBase + ext);
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          fs.copyFileSync(f, dest);
+        }
+      }
       console.log(`[${pkgName}] ✓ ${mod} (${ms}ms)`);
     } else {
       pkgResult.fail++;
       results.totals.compiledFail++;
       console.error(`[${pkgName}] ✗ ${mod} (${ms}ms) status=${proc.status}`);
-      console.error('  stderr:', (proc.stderr || '').slice(0, 500));
+      // Print stdout AND stderr — Lean's diagnostic messages go to stdout
+      // by default (the harness routes Module.print there).
+      const so = (proc.stdout || '').slice(0, 1000);
+      const se = (proc.stderr || '').slice(0, 1000);
+      if (so) console.error('  stdout:', so);
+      if (se) console.error('  stderr:', se);
       if (ABORT_ON_FAIL) { results.packages.push(pkgResult); writeReport(); process.exit(5); }
     }
   }
   cumulativeLeanPathDirs.push(outLib);
   results.packages.push(pkgResult);
 }
+
+// Harvest done by per-file copy above. Remove staged files from STDLIB_DIR
+// so the install-prefix is left as we found it. (process.on('exit') also
+// fires for partial cleanup if the script aborts mid-build.)
+console.log(`[cross-compile] removing ${stagedFiles.size} files from install-prefix`);
+for (const f of stagedFiles) { try { fs.unlinkSync(f); } catch (_) {} }
+stagedFiles.clear();
 
 function writeReport() {
   fs.writeFileSync(path.join(OUT_DIR, 'cross-compile-report.json'), JSON.stringify(results, null, 2));
