@@ -148,7 +148,15 @@ function moduleNameFromRelPath(rel) {
 //   private import Foo.Bar
 // Plus comments and `module` line. This is conservative — anything not
 // matching a simple import on its own line is ignored.
-const IMPORT_RE = /^\s*(?:public\s+|private\s+|@\[[^\]]*\]\s*)*import\s+(.+?)\s*(?:--.*)?$/;
+// Lean 4 module-system import lines look like:
+//   import Foo.Bar
+//   public import Foo.Bar
+//   meta import Foo.Bar
+//   public meta import Foo.Bar
+//   private meta import Foo.Bar
+//   @[deprecated] import Foo.Bar
+// Modifiers can appear in any combination + order before the `import` keyword.
+const IMPORT_RE = /^\s*(?:public\s+|private\s+|meta\s+|@\[[^\]]*\]\s*)*import\s+(.+?)\s*(?:--.*)?$/;
 function parseImports(source) {
   const out = [];
   for (const line of source.split(/\r?\n/)) {
