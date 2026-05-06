@@ -45,20 +45,43 @@ export function ProjectMenu() {
       }
       const { name, root: scannedRoot, files } = await r.json();
       dispatch(importProject({ name, root: scannedRoot, files }));
-      // Also fetch the project's prebuilt oleans bundle (.lake/build/lib/lean)
+      // Fetch the project's prebuilt oleans bundle (.lake/build/lib/lean)
       // so the in-browser compiler can resolve project-internal imports
-      // (e.g. `import Lc.LiCriterion.Basic`). Skipped silently if the
-      // project hasn't been built — compile will then fail on those
-      // imports the same way it would for a never-built project.
+      // (e.g. `import Lc.LiCriterion.Basic`). Three outcomes:
+      //   200: bundle staged, project-internal imports will resolve.
+      //   200 + empty bundle: project has no .lake — compile will fail
+      //     on project-internal imports (same as a never-built project).
+      //   422: project oleans built with an incompatible Lean toolchain
+      //     (typically native x86_64 vs our wasm32). Surface a clear
+      //     warning so the user knows compile WILL fail with their
+      //     prebuilt oleans, regardless of what they do.
       try {
         const bundleR = await fetch('/api/project/oleans', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ root: scannedRoot }),
         });
-        if (bundleR.ok) {
+        if (bundleR.status === 422) {
+          const info = await bundleR.json();
+          const lines = [
+            'Project imported, but its prebuilt oleans cannot be used.',
+            '',
+            info.message ?? 'incompatible toolchain',
+            '',
+            'Mismatch:',
+            ...(info.reasons ?? []).map((r: string) => '  • ' + r),
+            '',
+            `Sample file: ${info.sampleFile}`,
+            `Total oleans: ${info.oleanCount}`,
+            '',
+            'Files will open in the editor, but compiles that import',
+            'project-internal modules (e.g. Lc.*, Hadamard.*) will fail',
+            'with "incompatible header" until the project is rebuilt with',
+            'the wasm32 toolchain that ships with this IDE.',
+          ].join('\n');
+          alert(lines);
+        } else if (bundleR.ok) {
           const bytes = new Uint8Array(await bundleR.arrayBuffer());
-          // Bundle starts with a u32 count; size > 4 means at least one olean.
           if (bytes.byteLength > 4) {
             const id = (window as any).__store?.getState()?.projects?.currentId;
             if (id) setProjectOleansBundle(id, bytes);

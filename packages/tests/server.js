@@ -292,14 +292,45 @@ async function handleCompile(req, res) {
 // and reject obvious traversal attempts. There's no allowlist beyond
 // "must be an absolute path that exists and is a directory" — for a
 // shared/remote deployment, gate this behind explicit roots.
+// Olean header layout (src/library/module.cpp:78):
+//   [0..5)   magic     "olean"
+//   [5]      version   1 byte (currently 2)
+//   [6]      flags     1 byte (bit 0: GMP)
+//   [7..40)  lean_version  33 bytes, '\0'-padded
+//   [40..80) githash       40 bytes, '\0'-padded
+//   [80..)   base_addr (size_t — wasm32: 4 bytes, native: 8 bytes), then payload
+// Bytes 0..80 are arch-independent text fields; if the project's olean and
+// our vendored stdlib's olean disagree here, Lean's loader will reject with
+// "incompatible header" — the project was built with a different toolchain
+// (e.g. native x86_64 release vs our wasm32 -pre build).
+const OLEAN_HEADER_FIXED_LEN = 80;
+let __vendorOleanSignature = null;
+function getVendorOleanSignature() {
+  if (__vendorOleanSignature) return __vendorOleanSignature;
+  const probe = path.join(VENDOR, 'lib/lean/Init.olean');
+  const fd = fs.openSync(probe, 'r');
+  const buf = Buffer.alloc(OLEAN_HEADER_FIXED_LEN);
+  fs.readSync(fd, buf, 0, OLEAN_HEADER_FIXED_LEN, 0);
+  fs.closeSync(fd);
+  __vendorOleanSignature = buf;
+  return __vendorOleanSignature;
+}
+function describeOleanHeader(buf) {
+  const magic = buf.slice(0, 5).toString('ascii');
+  const version = buf[5];
+  const flags = buf[6];
+  const leanVersion = buf.slice(7, 40).toString('ascii').replace(/\0+$/, '');
+  const githash = buf.slice(40, 80).toString('ascii').replace(/\0+$/, '');
+  return { magic, version, flags, leanVersion, githash };
+}
+
 // POST /api/project/oleans
 //   body: { root: string }
-//   reply: packed binary bundle of every .olean / .olean.private /
-//          .olean.server / .ir under <root>/.lake/build/lib/lean/.
-//          Format identical to /vendor/oleans.bundle:
-//            u32 count
-//            per entry: u16 pathLen, pathBytes, u32 dataLen, dataBytes
-//          Empty bundle (just the count=0) if no .lake build directory.
+//   reply on compatible build: packed binary bundle (same format as
+//          /vendor/oleans.bundle). Empty bundle if no .lake/ exists.
+//   reply 422: { error: 'incompatible-olean-toolchain', expected, actual,
+//                sampleFile } — when the project's prebuilt oleans were
+//          built with a different Lean toolchain than our wasm32 stdlib.
 async function handleProjectOleans(req, res) {
   if (req.method !== 'POST') {
     res.writeHead(405, { 'Content-Type': 'text/plain' });
@@ -323,6 +354,50 @@ async function handleProjectOleans(req, res) {
       );
     }
   } catch (_) { /* no .lake — return empty bundle */ }
+
+  // Compatibility check: if the project has any .olean files, sample
+  // the first one's header and compare against our vendored stdlib's
+  // signature. Mismatch means the user's project was built with a
+  // different toolchain (different Lean version, GMP flag, or githash;
+  // most commonly: native x86_64 vs our wasm32 build). Lean's loader
+  // would reject these at runtime; fail fast here with a clear message.
+  const sampleOlean = entries.find((e) => e.path.endsWith('.olean'));
+  if (sampleOlean) {
+    const fd = fs.openSync(path.join(lakeLib, sampleOlean.path), 'r');
+    const sampleBuf = Buffer.alloc(OLEAN_HEADER_FIXED_LEN);
+    fs.readSync(fd, sampleBuf, 0, OLEAN_HEADER_FIXED_LEN, 0);
+    fs.closeSync(fd);
+    const expectedSig = getVendorOleanSignature();
+    if (!sampleBuf.equals(expectedSig)) {
+      const expected = describeOleanHeader(expectedSig);
+      const actual = describeOleanHeader(sampleBuf);
+      const reasons = [];
+      if (expected.flags !== actual.flags) reasons.push(`flags differ (expected ${expected.flags}, got ${actual.flags} — likely GMP build vs no-GMP)`);
+      if (expected.leanVersion !== actual.leanVersion) reasons.push(`lean_version "${expected.leanVersion}" vs "${actual.leanVersion}"`);
+      if (expected.githash !== actual.githash) reasons.push(`githash "${expected.githash || '(empty)'}" vs "${actual.githash}"`);
+      if (expected.version !== actual.version) reasons.push(`olean schema v${expected.version} vs v${actual.version}`);
+      const body = JSON.stringify({
+        error: 'incompatible-olean-toolchain',
+        message: 'Project oleans were built with a different Lean toolchain than the WASM stdlib bundled with this IDE. They cannot be loaded in browser-mode compile.',
+        reasons,
+        expected,
+        actual,
+        sampleFile: sampleOlean.path,
+        oleanCount: entries.length,
+      });
+      console.log('[tests-server] incompatible project oleans at ' + lakeLib + ': ' + reasons.join('; '));
+      res.writeHead(422, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(body),
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+        'Cache-Control': 'no-store',
+      });
+      res.end(body);
+      return;
+    }
+  }
   const parts = [];
   const countBuf = Buffer.alloc(4);
   countBuf.writeUInt32LE(entries.length, 0);
