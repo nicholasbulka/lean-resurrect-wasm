@@ -158,8 +158,14 @@ function waitForCalledRun() {
 
 // --- init: download lean.js + manifest + Init oleans, instantiate WASM ----
 
-async function init(leanJsUrl, manifestUrl) {
-  console.log('[leanWorker] init: leanJsUrl=' + leanJsUrl);
+async function init(leanJsUrl, manifestUrl, cache) {
+  cache = cache || {};
+  const usedCache = {
+    wasmModule: !!cache.cachedWasmModule,
+    oleans: !!cache.cachedOleans,
+    leanJsSource: !!cache.cachedLeanJsSource,
+  };
+  console.log('[leanWorker] init: leanJsUrl=' + leanJsUrl + ' cache=' + JSON.stringify(usedCache));
   installNodeShim();
   // Force Lean's std::thread::hardware_concurrency() (which maps to
   // navigator.hardwareConcurrency) to 1 so its task manager doesn't try
@@ -176,80 +182,88 @@ async function init(leanJsUrl, manifestUrl) {
     console.log('[leanWorker] could not override hardwareConcurrency: ' + e.message);
   }
 
-  postProgress({ phase: 'fetching-manifest', message: 'fetching olean manifest' });
-  const manifest = await (await fetch(manifestUrl)).json();
-  // v4.27 module system: stage Init/Std/Lean's full file family
-  // (.olean, .server, .private, .ir) plus all per-module variants. Without
-  // all four file types, Lean errors with "missing data file" / "missing
-  // IR data file". User code that touches Std (e.g., HashMap, Array.size)
-  // or Lean (e.g., elaboration metadata) needs those staged too. We skip
-  // Lake/LakeMain/Leanc since they're build-tool internals.
-  const STAGE_PREFIXES = ['Init', 'Std', 'Lean'];
-  initEntries = manifest.entries.filter((e) => {
-    const seg = e.path.split('/')[0].replace(/\.olean(\.private|\.server)?$|\.ir$/, '');
-    return STAGE_PREFIXES.includes(seg);
-  });
-  console.log('[leanWorker] manifest: ' + initEntries.length + ' entries (Init+Std+Lean)');
+  let oleanBytes;
+  if (cache.cachedOleans) {
+    oleanBytes = cache.cachedOleans;
+    initEntries = oleanBytes;
+    console.log('[leanWorker] reusing ' + oleanBytes.length + ' oleans from main-thread cache');
+    postProgress({ phase: 'fetching-oleans', current: oleanBytes.length, total: oleanBytes.length, message: 'oleans cached' });
+  } else {
+    postProgress({ phase: 'fetching-manifest', message: 'fetching olean manifest' });
+    const manifest = await (await fetch(manifestUrl)).json();
+    // v4.27 module system: stage Init/Std/Lean's full file family
+    // (.olean, .server, .private, .ir) plus all per-module variants. Without
+    // all four file types, Lean errors with "missing data file" / "missing
+    // IR data file". User code that touches Std (e.g., HashMap, Array.size)
+    // or Lean (e.g., elaboration metadata) needs those staged too. We skip
+    // Lake/LakeMain/Leanc since they're build-tool internals.
+    const STAGE_PREFIXES = ['Init', 'Std', 'Lean'];
+    initEntries = manifest.entries.filter((e) => {
+      const seg = e.path.split('/')[0].replace(/\.olean(\.private|\.server)?$|\.ir$/, '');
+      return STAGE_PREFIXES.includes(seg);
+    });
+    console.log('[leanWorker] manifest: ' + initEntries.length + ' entries (Init+Std+Lean)');
 
-  postProgress({ phase: 'fetching-oleans', current: 0, total: initEntries.length, message: 'downloading stdlib oleans' });
-  // Cap concurrency: browsers limit to ~6 connections per origin and a
-  // small static server can drop requests under heavy load. Firing 2000+
-  // fetches at once was causing "Failed to fetch" mid-batch.
-  const CONCURRENCY = 8;
-  const oleanBytes = new Array(initEntries.length);
-  let done = 0;
-  let nextIdx = 0;
-  async function worker() {
-    while (true) {
-      const i = nextIdx++;
-      if (i >= initEntries.length) return;
-      const e = initEntries[i];
-      // Retry once on transient failure — keep-alive races, etc.
-      let bytes = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const r = await fetch(manifest.root + '/' + e.path);
-          if (!r.ok) throw new Error('http ' + r.status + ' ' + e.path);
-          bytes = new Uint8Array(await r.arrayBuffer());
-          break;
-        } catch (err) {
-          if (attempt === 2) throw err;
-          await new Promise((res) => setTimeout(res, 200 * (attempt + 1)));
+    postProgress({ phase: 'fetching-oleans', current: 0, total: initEntries.length, message: 'downloading stdlib oleans' });
+    const CONCURRENCY = 8;
+    oleanBytes = new Array(initEntries.length);
+    let done = 0;
+    let nextIdx = 0;
+    async function fetchWorker() {
+      while (true) {
+        const i = nextIdx++;
+        if (i >= initEntries.length) return;
+        const e = initEntries[i];
+        let bytes = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const r = await fetch(manifest.root + '/' + e.path);
+            if (!r.ok) throw new Error('http ' + r.status + ' ' + e.path);
+            bytes = new Uint8Array(await r.arrayBuffer());
+            break;
+          } catch (err) {
+            if (attempt === 2) throw err;
+            await new Promise((res) => setTimeout(res, 200 * (attempt + 1)));
+          }
+        }
+        oleanBytes[i] = { path: e.path, bytes };
+        done += 1;
+        if (done % 25 === 0 || done === initEntries.length) {
+          postProgress({ phase: 'fetching-oleans', current: done, total: initEntries.length, message: 'downloading stdlib oleans' });
         }
       }
-      oleanBytes[i] = { path: e.path, bytes };
-      done += 1;
-      // Throttle progress posts so we don't flood the main thread.
-      if (done % 25 === 0 || done === initEntries.length) {
-        postProgress({ phase: 'fetching-oleans', current: done, total: initEntries.length, message: 'downloading Init oleans' });
-      }
     }
+    await Promise.all(Array.from({ length: CONCURRENCY }, fetchWorker));
+    console.log('[leanWorker] fetched ' + oleanBytes.length + ' oleans');
   }
-  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
-  console.log('[leanWorker] fetched ' + oleanBytes.length + ' oleans');
 
   // locateFile resolves "lean.wasm" against the directory of lean.js.
   const baseUrl = leanJsUrl.slice(0, leanJsUrl.lastIndexOf('/') + 1);
   setupModule(baseUrl, leanJsUrl, oleanBytes);
 
-  postProgress({ phase: 'loading-wasm', message: 'loading lean.js' });
-  console.log('[leanWorker] fetching lean.js for patching...');
-  const r = await fetch(leanJsUrl);
-  if (!r.ok) throw new Error('fetch ' + leanJsUrl + ': ' + r.status);
-  let src = await r.text();
-  // Expose callMain on Module. Two known anchor patterns: v4.15 / v4.27.
-  const PATCH_V415_OLD = 'var sharedModules=Module["sharedModules"]||[];';
-  const PATCH_V415_NEW = 'Module.callMain=callMain;var sharedModules=Module["sharedModules"]||[];';
-  const PATCH_V427_OLD = 'function callMain(args=[]){';
-  const PATCH_V427_NEW = 'Module["callMain"]=callMain;function callMain(args=[]){';
-  if (src.includes(PATCH_V415_OLD)) {
-    src = src.replace(PATCH_V415_OLD, PATCH_V415_NEW);
-    console.log('[leanWorker] applied v4.15 callMain patch');
-  } else if (src.includes(PATCH_V427_OLD)) {
-    src = src.replace(PATCH_V427_OLD, PATCH_V427_NEW);
-    console.log('[leanWorker] applied v4.27 callMain patch');
+  postProgress({ phase: 'loading-wasm', message: cache.cachedLeanJsSource ? 'loading lean.js (cached)' : 'loading lean.js' });
+  let src;
+  if (cache.cachedLeanJsSource) {
+    src = cache.cachedLeanJsSource;
+    console.log('[leanWorker] reusing patched lean.js source from main-thread cache (' + src.length + ' chars)');
   } else {
-    console.log('[leanWorker] no callMain patch anchor matched; assuming native export');
+    console.log('[leanWorker] fetching lean.js for patching...');
+    const r = await fetch(leanJsUrl);
+    if (!r.ok) throw new Error('fetch ' + leanJsUrl + ': ' + r.status);
+    src = await r.text();
+    const PATCH_V415_OLD = 'var sharedModules=Module["sharedModules"]||[];';
+    const PATCH_V415_NEW = 'Module.callMain=callMain;var sharedModules=Module["sharedModules"]||[];';
+    const PATCH_V427_OLD = 'function callMain(args=[]){';
+    const PATCH_V427_NEW = 'Module["callMain"]=callMain;function callMain(args=[]){';
+    if (src.includes(PATCH_V415_OLD)) {
+      src = src.replace(PATCH_V415_OLD, PATCH_V415_NEW);
+      console.log('[leanWorker] applied v4.15 callMain patch');
+    } else if (src.includes(PATCH_V427_OLD)) {
+      src = src.replace(PATCH_V427_OLD, PATCH_V427_NEW);
+      console.log('[leanWorker] applied v4.27 callMain patch');
+    } else {
+      console.log('[leanWorker] no callMain patch anchor matched; assuming native export');
+    }
   }
   // We keep _emscripten_proxy_main as the entry: bypassing the proxy
   // ("call _main directly") leaves the pthread runtime state uninitialised
@@ -263,12 +277,14 @@ async function init(leanJsUrl, manifestUrl) {
   // We've already stubbed the FS mounts in preRun, so the body of that
   // EM_ASM is dead code from our perspective; replace it with a no-op.
   // We accept the negative match as silent (older v4.15 lacks this guard).
-  const PATCH_EM_ASM_OLD = /(\d+):\(\)=>\{if\(typeof process==="undefined"\|\|process\.release\.name!=="node"\)\{throw new Error\("The Lean command-line driver[\s\S]*?FS\.chdir\(process\.cwd\(\)\)\}/;
-  const PATCH_EM_ASM_NEW = '$1:()=>{/* CLI Node-check stripped by leanWorker shim */}';
-  const beforeLen = src.length;
-  src = src.replace(PATCH_EM_ASM_OLD, PATCH_EM_ASM_NEW);
-  if (src.length !== beforeLen) {
-    console.log('[leanWorker] stripped CLI Node-check EM_ASM');
+  if (!cache.cachedLeanJsSource) {
+    const PATCH_EM_ASM_OLD = /(\d+):\(\)=>\{if\(typeof process==="undefined"\|\|process\.release\.name!=="node"\)\{throw new Error\("The Lean command-line driver[\s\S]*?FS\.chdir\(process\.cwd\(\)\)\}/;
+    const PATCH_EM_ASM_NEW = '$1:()=>{/* CLI Node-check stripped by leanWorker shim */}';
+    const beforeLen = src.length;
+    src = src.replace(PATCH_EM_ASM_OLD, PATCH_EM_ASM_NEW);
+    if (src.length !== beforeLen) {
+      console.log('[leanWorker] stripped CLI Node-check EM_ASM');
+    }
   }
   // Build a Blob URL so both this worker AND the emcc-spawned pthread
   // workers load the patched source. We MUST give pthread workers the
@@ -304,9 +320,40 @@ async function init(leanJsUrl, manifestUrl) {
   const blobUrl = URL.createObjectURL(blob);
   // Re-point the pthread workers at the patched blob.
   self.Module.mainScriptUrlOrBlob = blobUrl;
+
+  // Always hook Module.instantiateWasm so we can:
+  //   (a) reuse a precompiled WebAssembly.Module passed in via cache, OR
+  //   (b) capture the freshly-compiled module on first run so the main
+  //       page can cache it for the next worker spawn.
+  // Saves the dominant cold-start cost (~5-15s of WASM JIT) on respawn.
+  let capturedWasmModule = cache.cachedWasmModule || null;
+  self.Module.instantiateWasm = function (imports, successCallback) {
+    if (capturedWasmModule) {
+      // Cached path: reuse the existing compiled module.
+      WebAssembly.instantiate(capturedWasmModule, imports).then(
+        function (instance) { successCallback(instance, capturedWasmModule); },
+        function (err) { console.log('[leanWorker] instantiateWasm cached failed: ' + err); throw err; }
+      );
+    } else {
+      // Cold path: fetch + compile + capture for the main-page cache.
+      const wasmUrl = (self.Module.locateFile ? self.Module.locateFile('lean.wasm') : 'lean.wasm');
+      WebAssembly.compileStreaming(fetch(wasmUrl)).then(
+        function (mod) {
+          capturedWasmModule = mod;
+          self.__leanCapturedWasmModule = mod;
+          return WebAssembly.instantiate(mod, imports).then(function (instance) {
+            successCallback(instance, mod);
+          });
+        },
+        function (err) { console.log('[leanWorker] instantiateWasm cold failed: ' + err); throw err; }
+      );
+    }
+    return {};
+  };
+  console.log('[leanWorker] instantiateWasm hook installed (' + (cache.cachedWasmModule ? 'cached' : 'cold') + ')');
+
   console.log('[leanWorker] importScripts(patched lean.js)...');
   importScripts(blobUrl);
-  // Don't revokeObjectURL: pthread workers may still be loading from it.
   console.log('[leanWorker] importScripts done');
 
   postProgress({ phase: 'loading-wasm', message: 'instantiating WASM runtime' });
@@ -315,6 +362,28 @@ async function init(leanJsUrl, manifestUrl) {
 
   if (typeof self.Module.callMain !== 'function' && typeof self.Module._main !== 'function') {
     throw new Error('leanWorker: neither Module.callMain nor Module._main is exposed');
+  }
+
+  // Ship loaded state back to the main page so subsequent worker spawns
+  // can skip the work. Only post what wasn't already provided by the
+  // cache (otherwise we'd double-store on every spawn).
+  const cachePayload = { type: 'cache-fill' };
+  if (!usedCache.wasmModule && self.__leanCapturedWasmModule) {
+    cachePayload.wasmModule = self.__leanCapturedWasmModule;
+  }
+  if (!usedCache.oleans) {
+    cachePayload.oleans = oleanBytes;
+  }
+  if (!usedCache.leanJsSource) {
+    cachePayload.leanJsSource = src;
+  }
+  if (cachePayload.wasmModule || cachePayload.oleans || cachePayload.leanJsSource) {
+    try {
+      postMessage(cachePayload);
+      console.log('[leanWorker] cache-fill posted: ' + Object.keys(cachePayload).filter(k => k !== 'type').join(','));
+    } catch (e) {
+      console.log('[leanWorker] cache-fill postMessage failed: ' + e.message);
+    }
   }
 
   postMessage({ type: 'ready' });
@@ -452,7 +521,11 @@ self.onmessage = (event) => {
   if (!msg || typeof msg !== 'object') return;
   if (msg.type === 'init') {
     if (leanLoadedPromise) return;
-    leanLoadedPromise = init(msg.leanJsUrl, msg.manifestUrl).catch((e) => {
+    leanLoadedPromise = init(msg.leanJsUrl, msg.manifestUrl, {
+      cachedWasmModule: msg.cachedWasmModule,
+      cachedOleans: msg.cachedOleans,
+      cachedLeanJsSource: msg.cachedLeanJsSource,
+    }).catch((e) => {
       postMessage({ type: 'init-error', error: (e && e.message) || String(e) });
     });
     return;

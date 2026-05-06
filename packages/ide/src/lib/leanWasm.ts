@@ -31,6 +31,17 @@ interface InflightCompile {
   onProgress: OnProgress;
 }
 
+interface CrossWorkerCache {
+  /** Compiled WASM module. JIT-compiled once per page lifetime, transferable
+   * between Workers — avoids re-JITing 250MB of bytecode on each respawn. */
+  wasmModule: WebAssembly.Module | null;
+  /** Olean files fetched from /vendor — keyed by path under /lib/lean. */
+  oleans: Array<{ path: string; bytes: Uint8Array }> | null;
+  /** Patched lean.js source as a single string. Avoids re-fetch + re-parse
+   * across respawns. */
+  leanJsSource: string | null;
+}
+
 interface WorkerState {
   worker: Worker | null;
   ready: Promise<void> | null;
@@ -39,6 +50,8 @@ interface WorkerState {
   // Used to surface init failures to any compile already queued.
   initError: Error | null;
   nextRequestId: number;
+  /** Cache that survives `disposeLeanWorker` — passed to each new worker. */
+  cache: CrossWorkerCache;
 }
 
 const state: WorkerState = {
@@ -47,6 +60,7 @@ const state: WorkerState = {
   pending: new Map(),
   initError: null,
   nextRequestId: 1,
+  cache: { wasmModule: null, oleans: null, leanJsSource: null },
 };
 
 function spawnWorker(onProgress: OnProgress): Worker {
@@ -91,6 +105,14 @@ function spawnWorker(onProgress: OnProgress): Worker {
         const err = new Error('Lean WASM aborted: ' + m.what);
         for (const inflight of state.pending.values()) inflight.reject(err);
         state.pending.clear();
+        return;
+      }
+      case 'cache-fill': {
+        // The worker shipped back its loaded WASM module + oleans + lean.js
+        // source. Stash them so the next worker spawn can skip fetch+JIT.
+        if (m.wasmModule && !state.cache.wasmModule) state.cache.wasmModule = m.wasmModule;
+        if (m.oleans && !state.cache.oleans) state.cache.oleans = m.oleans;
+        if (m.leanJsSource && !state.cache.leanJsSource) state.cache.leanJsSource = m.leanJsSource;
         return;
       }
     }
@@ -138,10 +160,20 @@ export function ensureLeanLoaded(onProgress: OnProgress = noopProgress): Promise
         if (orig) orig.call(state.worker!, ev);
       }
     };
+    // Pass any cached state forward. WebAssembly.Module is transferable
+    // between Workers but should NOT be transferred (we want to keep our
+    // copy too); structured-clone of a Module is cheap (just a handle).
+    // Olean Uint8Arrays are large — transfer their underlying buffers
+    // and re-create on this side when we next need them. For simplicity
+    // here, structured-clone (copy) is acceptable on first spawn since
+    // we only do this once per dispose.
     state.worker.postMessage({
       type: 'init',
       leanJsUrl: LEAN_JS_URL,
       manifestUrl: MANIFEST_URL,
+      cachedWasmModule: state.cache.wasmModule,
+      cachedOleans: state.cache.oleans,
+      cachedLeanJsSource: state.cache.leanJsSource,
     });
   });
   return state.ready;
