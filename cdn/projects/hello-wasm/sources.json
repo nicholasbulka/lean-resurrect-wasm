@@ -3,7 +3,11 @@
   "files": [
     {
       "path": "Main.lean",
-      "content": "-- Trivial demo project hosted on the CDN.\n-- Replace this directory contents with real wasm32-built\n-- artifacts when they exist.\n\ndef greet (name : String) : String := \"hello \" ++ name\n\n#eval greet \"wasm\"\n"
+      "content": "-- Demo project hosted on the CDN.\n-- Imports Mathlib.Demo, a stub module compiled with the wasm32\n-- toolchain and shipped in this project's oleans bundle.\n-- Real Mathlib would replace it with the same import shape.\n\nimport Mathlib.Demo\n\nopen Mathlib.Demo\n\n#eval greeting              -- \"hello from Mathlib (stub)\"\n#eval double 21             -- 42\n#check @double_zero         -- double 0 = 0\n"
+    },
+    {
+      "path": "Mathlib/Demo.lean",
+      "content": "/-!\n# Mathlib.Demo — stub module shipped pre-compiled.\n\nThis source is included only for reference / editing in the IDE; the\nrunning compile reads the wasm32-built `Mathlib/Demo.olean` from the\nproject's oleans bundle, not this file.\n-/\n\nnamespace Mathlib.Demo\n\ndef greeting : String := \"hello from Mathlib (stub)\"\n\ndef double (n : Nat) : Nat := n + n\n\ntheorem double_zero : double 0 = 0 := rfl\n\nend Mathlib.Demo\n"
     }
   ]
 }
