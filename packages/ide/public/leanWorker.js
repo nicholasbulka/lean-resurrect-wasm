@@ -182,21 +182,22 @@ async function init(leanJsUrl, manifestUrl, cache) {
     console.log('[leanWorker] could not override hardwareConcurrency: ' + e.message);
   }
 
-  let oleanBytes;
-  if (cache.cachedOleans) {
-    oleanBytes = cache.cachedOleans;
-    initEntries = oleanBytes;
-    console.log('[leanWorker] reusing ' + oleanBytes.length + ' oleans from main-thread cache');
-    postProgress({ phase: 'fetching-oleans', current: oleanBytes.length, total: oleanBytes.length, message: 'oleans cached' });
-  } else {
-    // One fetch of /vendor/oleans.bundle (a packed binary of all
-    // Init/Std/Lean files) instead of 7715 individual requests. Per-
-    // request overhead × 7715 (even from cache) was a major cost; one
-    // request is one cache hit, one parse pass.
-    // Format: u32 count; per entry: u16 pathLen, pathBytes, u32 dataLen, dataBytes.
+  // Fire all three independent fetches in parallel: oleans bundle,
+  // lean.js source, and lean.wasm (compiled to a WebAssembly.Module).
+  // Sequential download was ~10-30s on cold cache; parallel cuts that
+  // to roughly the slowest of the three. WASM compile (the dominant
+  // CPU cost) overlaps with the network-bound bundle fetch.
+  const baseUrl = leanJsUrl.slice(0, leanJsUrl.lastIndexOf('/') + 1);
+  const wasmUrl = baseUrl + 'lean.wasm';
+
+  const oleansPromise = (async () => {
+    if (cache.cachedOleans) {
+      console.log('[leanWorker] oleans: cached (' + cache.cachedOleans.length + ' entries)');
+      postProgress({ phase: 'fetching-oleans', current: cache.cachedOleans.length, total: cache.cachedOleans.length, message: 'oleans cached' });
+      return cache.cachedOleans;
+    }
     postProgress({ phase: 'fetching-oleans', message: 'downloading olean bundle' });
-    const bundleUrl = '/vendor/oleans.bundle';
-    const r = await fetch(bundleUrl);
+    const r = await fetch('/vendor/oleans.bundle');
     if (!r.ok) throw new Error('bundle fetch failed: ' + r.status);
     const buf = new Uint8Array(await r.arrayBuffer());
     console.log('[leanWorker] bundle: ' + (buf.byteLength / 1048576).toFixed(1) + ' MB');
@@ -204,71 +205,72 @@ async function init(leanJsUrl, manifestUrl, cache) {
     const dec = new TextDecoder();
     const count = dv.getUint32(0, true);
     let off = 4;
-    oleanBytes = new Array(count);
+    const out = new Array(count);
     for (let i = 0; i < count; i++) {
       const pathLen = dv.getUint16(off, true); off += 2;
-      const path = dec.decode(buf.subarray(off, off + pathLen)); off += pathLen;
+      const p = dec.decode(buf.subarray(off, off + pathLen)); off += pathLen;
       const dataLen = dv.getUint32(off, true); off += 4;
       const bytes = buf.subarray(off, off + dataLen); off += dataLen;
-      oleanBytes[i] = { path, bytes };
+      out[i] = { path: p, bytes };
       if ((i & 1023) === 0) {
         postProgress({ phase: 'fetching-oleans', current: i, total: count, message: 'unpacking olean bundle' });
       }
     }
-    initEntries = oleanBytes;
-    console.log('[leanWorker] unpacked ' + oleanBytes.length + ' oleans from bundle');
+    console.log('[leanWorker] unpacked ' + out.length + ' oleans from bundle');
     postProgress({ phase: 'fetching-oleans', current: count, total: count, message: 'oleans ready' });
-  }
+    return out;
+  })();
 
-  // locateFile resolves "lean.wasm" against the directory of lean.js.
-  const baseUrl = leanJsUrl.slice(0, leanJsUrl.lastIndexOf('/') + 1);
-  setupModule(baseUrl, leanJsUrl, oleanBytes);
-
-  postProgress({ phase: 'loading-wasm', message: cache.cachedLeanJsSource ? 'loading lean.js (cached)' : 'loading lean.js' });
-  let src;
-  if (cache.cachedLeanJsSource) {
-    src = cache.cachedLeanJsSource;
-    console.log('[leanWorker] reusing patched lean.js source from main-thread cache (' + src.length + ' chars)');
-  } else {
+  const leanJsSourcePromise = (async () => {
+    if (cache.cachedLeanJsSource) {
+      console.log('[leanWorker] lean.js source: cached (' + cache.cachedLeanJsSource.length + ' chars)');
+      return cache.cachedLeanJsSource;
+    }
     console.log('[leanWorker] fetching lean.js for patching...');
     const r = await fetch(leanJsUrl);
     if (!r.ok) throw new Error('fetch ' + leanJsUrl + ': ' + r.status);
-    src = await r.text();
+    let s = await r.text();
     const PATCH_V415_OLD = 'var sharedModules=Module["sharedModules"]||[];';
     const PATCH_V415_NEW = 'Module.callMain=callMain;var sharedModules=Module["sharedModules"]||[];';
     const PATCH_V427_OLD = 'function callMain(args=[]){';
     const PATCH_V427_NEW = 'Module["callMain"]=callMain;function callMain(args=[]){';
-    if (src.includes(PATCH_V415_OLD)) {
-      src = src.replace(PATCH_V415_OLD, PATCH_V415_NEW);
+    if (s.includes(PATCH_V415_OLD)) {
+      s = s.replace(PATCH_V415_OLD, PATCH_V415_NEW);
       console.log('[leanWorker] applied v4.15 callMain patch');
-    } else if (src.includes(PATCH_V427_OLD)) {
-      src = src.replace(PATCH_V427_OLD, PATCH_V427_NEW);
+    } else if (s.includes(PATCH_V427_OLD)) {
+      s = s.replace(PATCH_V427_OLD, PATCH_V427_NEW);
       console.log('[leanWorker] applied v4.27 callMain patch');
     } else {
       console.log('[leanWorker] no callMain patch anchor matched; assuming native export');
     }
-  }
-  // We keep _emscripten_proxy_main as the entry: bypassing the proxy
-  // ("call _main directly") leaves the pthread runtime state uninitialised
-  // and Lean traps with `unreachable` on first thread-touching code path.
-  // Instead we go through the proxy (callMain returns immediately) and
-  // listen for Module.onExit to know when the proxied main truly finishes.
-  // Module.noExitRuntime keeps the WASM instance alive after main exits so
-  // subsequent compiles can reuse it.
-  //
-  // Strip Lean's CLI EM_ASM that throws when not running under Node.js.
-  // We've already stubbed the FS mounts in preRun, so the body of that
-  // EM_ASM is dead code from our perspective; replace it with a no-op.
-  // We accept the negative match as silent (older v4.15 lacks this guard).
-  if (!cache.cachedLeanJsSource) {
     const PATCH_EM_ASM_OLD = /(\d+):\(\)=>\{if\(typeof process==="undefined"\|\|process\.release\.name!=="node"\)\{throw new Error\("The Lean command-line driver[\s\S]*?FS\.chdir\(process\.cwd\(\)\)\}/;
     const PATCH_EM_ASM_NEW = '$1:()=>{/* CLI Node-check stripped by leanWorker shim */}';
-    const beforeLen = src.length;
-    src = src.replace(PATCH_EM_ASM_OLD, PATCH_EM_ASM_NEW);
-    if (src.length !== beforeLen) {
-      console.log('[leanWorker] stripped CLI Node-check EM_ASM');
+    const beforeLen = s.length;
+    s = s.replace(PATCH_EM_ASM_OLD, PATCH_EM_ASM_NEW);
+    if (s.length !== beforeLen) console.log('[leanWorker] stripped CLI Node-check EM_ASM');
+    return s;
+  })();
+
+  const wasmModulePromise = (async () => {
+    if (cache.cachedWasmModule) {
+      console.log('[leanWorker] wasm module: cached');
+      return cache.cachedWasmModule;
     }
-  }
+    postProgress({ phase: 'loading-wasm', message: 'compiling lean.wasm' });
+    console.log('[leanWorker] compileStreaming(' + wasmUrl + ')...');
+    const t0 = Date.now();
+    const mod = await WebAssembly.compileStreaming(fetch(wasmUrl));
+    console.log('[leanWorker] WASM compiled in ' + (Date.now() - t0) + 'ms');
+    return mod;
+  })();
+
+  const [oleanBytes, src, wasmModule] = await Promise.all([
+    oleansPromise, leanJsSourcePromise, wasmModulePromise,
+  ]);
+  initEntries = oleanBytes;
+
+  setupModule(baseUrl, leanJsUrl, oleanBytes);
+  postProgress({ phase: 'loading-wasm', message: 'instantiating WASM runtime' });
   // Build a Blob URL so both this worker AND the emcc-spawned pthread
   // workers load the patched source. We MUST give pthread workers the
   // patched URL too, because the EM_ASM Node-check fires inside the
@@ -304,36 +306,18 @@ async function init(leanJsUrl, manifestUrl, cache) {
   // Re-point the pthread workers at the patched blob.
   self.Module.mainScriptUrlOrBlob = blobUrl;
 
-  // Always hook Module.instantiateWasm so we can:
-  //   (a) reuse a precompiled WebAssembly.Module passed in via cache, OR
-  //   (b) capture the freshly-compiled module on first run so the main
-  //       page can cache it for the next worker spawn.
-  // Saves the dominant cold-start cost (~5-15s of WASM JIT) on respawn.
-  let capturedWasmModule = cache.cachedWasmModule || null;
+  // Hook Module.instantiateWasm to use the WebAssembly.Module we
+  // already compiled in parallel with the bundle/lean.js fetches.
+  // Skips emcc's default fetch+compile entirely.
+  self.__leanCapturedWasmModule = wasmModule;
   self.Module.instantiateWasm = function (imports, successCallback) {
-    if (capturedWasmModule) {
-      // Cached path: reuse the existing compiled module.
-      WebAssembly.instantiate(capturedWasmModule, imports).then(
-        function (instance) { successCallback(instance, capturedWasmModule); },
-        function (err) { console.log('[leanWorker] instantiateWasm cached failed: ' + err); throw err; }
-      );
-    } else {
-      // Cold path: fetch + compile + capture for the main-page cache.
-      const wasmUrl = (self.Module.locateFile ? self.Module.locateFile('lean.wasm') : 'lean.wasm');
-      WebAssembly.compileStreaming(fetch(wasmUrl)).then(
-        function (mod) {
-          capturedWasmModule = mod;
-          self.__leanCapturedWasmModule = mod;
-          return WebAssembly.instantiate(mod, imports).then(function (instance) {
-            successCallback(instance, mod);
-          });
-        },
-        function (err) { console.log('[leanWorker] instantiateWasm cold failed: ' + err); throw err; }
-      );
-    }
+    WebAssembly.instantiate(wasmModule, imports).then(
+      function (instance) { successCallback(instance, wasmModule); },
+      function (err) { console.log('[leanWorker] instantiateWasm failed: ' + err); throw err; }
+    );
     return {};
   };
-  console.log('[leanWorker] instantiateWasm hook installed (' + (cache.cachedWasmModule ? 'cached' : 'cold') + ')');
+  console.log('[leanWorker] instantiateWasm hook installed (' + (cache.cachedWasmModule ? 'cached' : 'eager-compiled') + ')');
 
   console.log('[leanWorker] importScripts(patched lean.js)...');
   importScripts(blobUrl);
