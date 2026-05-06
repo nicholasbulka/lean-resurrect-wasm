@@ -23,7 +23,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const os = require('node:os');
+const { spawnSync, spawn } = require('node:child_process');
 
 const required = ['PEGS_FILE', 'LIBRARY_KEY', 'SCRATCH', 'PREFLIGHT', 'WASM_LEAN_ROOT', 'OUT_DIR'];
 for (const k of required) {
@@ -41,6 +42,12 @@ const WASM_LEAN_ROOT = fs.realpathSync(process.env.WASM_LEAN_ROOT);
 fs.mkdirSync(process.env.OUT_DIR, { recursive: true });
 const OUT_DIR        = fs.realpathSync(process.env.OUT_DIR);
 const ABORT_ON_FAIL  = process.env.ABORT_ON_FAIL === '1';
+// CONCURRENCY: max simultaneous lean-process compiles. Each lean instance
+// can use 1-5 GB at peak, so the practical cap is RAM/8GB on most machines.
+// Default 1 (strict sequential) — set CONCURRENCY=N to parallelize.
+// Files are still scheduled in topological dep order: a module only runs
+// once its in-package imports have finished.
+const CONCURRENCY    = Math.max(1, parseInt(process.env.CONCURRENCY || '1', 10) || 1);
 
 const pegs = JSON.parse(fs.readFileSync(PEGS_FILE, 'utf8'));
 const lib = pegs.libraries[LIBRARY_KEY];
@@ -186,6 +193,7 @@ process.on('exit', () => {
   for (const f of stagedFiles) { try { fs.unlinkSync(f); } catch (_) {} }
 });
 
+(async function main() {
 for (const pkg of packagesToBuild) {
   const pkgName = pkg.name;
   const pkgRoot = path.join(SCRATCH, pkgName);
@@ -230,86 +238,140 @@ for (const pkg of packagesToBuild) {
   const leanPathStr = STDLIB_DIR;
 
   const pkgResult = { name: pkgName, srcRoot, fileCount: leanFiles.length, ok: 0, fail: 0, durations: {} };
-  for (const mod of modOrder) {
-    const relPath = mod.split('.').join('/') + '.lean';
-    const srcFile = path.join(srcRoot, relPath);
-    const modBase = mod.split('.').join('/');
-    // Write into install-prefix so Lean finds it on its baked-in search
-    // path. Track every produced file so we can harvest + clean up.
-    const stageBase = path.join(STDLIB_DIR, modBase);
-    const oleanOut = stageBase + '.olean';
-    const ileanOut = stageBase + '.ilean';
-    fs.mkdirSync(path.dirname(stageBase), { recursive: true });
 
-    const t0 = Date.now();
-    // The harness mounts cwd into the WASM FS by default so input files
-    // are reachable. Output files (the .olean we're producing) live
-    // under OUT_DIR which may not be a child of cwd, so pass OUT_DIR
-    // and every previously-built outLib via LEAN_EXTRA_MOUNTS — the
-    // harness mounts them too.
-    const extraMounts = [OUT_DIR, ...cumulativeLeanPathDirs].filter(Boolean).join(':');
-    // Node flags:
-    //   --stack-size=8192        thread stack 8MB (Lean recurses deeply)
-    //   --max-old-space-size=10240  10GB v8 old-space; the WASM heap grows
-    //                            inside this and big elaborations (Std.Data.*,
-    //                            anything pulling Mathlib) routinely cross
-    //                            multi-GB during type checking.
-    // Lean flag:
-    //   -M 8192                  cap Lean's own memory usage at 8GB
-    const proc = spawnSync(
-      'node',
-      ['--stack-size=8192', '--max-old-space-size=10240',
-       path.join(PREFLIGHT, 'trace_fs.js'),
-       '-M', '8192',         // Lean memory cap, MB
-       '-s', '8192',         // Lean thread stack, KB (default 64K is far too
-                             //   small for Mathlib-class elaboration; the
-                             //   "memory access out of bounds" trap on
-                             //   Cli/Basic's first attempt was a stack OOB
-                             //   in Lean's elaborator on Std.Data.TreeSet).
-       '-o', oleanOut, '-i', ileanOut, '-R', srcRoot, srcFile],
-      {
-        cwd: srcRoot,
-        env: {
-          ...process.env,
-          LEAN_INSTALL_DIR: WASM_LEAN_ROOT,
-          LEAN_PATH: leanPathStr,
-          LEAN_EXTRA_MOUNTS: extraMounts,
-        },
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024 * 1024,
-      }
-    );
-    const ms = Date.now() - t0;
-    pkgResult.durations[mod] = ms;
-    if (proc.status === 0) {
+  // Compile a single module. Returns a promise resolving with status.
+  // Spawns lean async (no spawnSync) so multiple compiles can run.
+  function compileOne(mod) {
+    return new Promise((resolve) => {
+      const relPath = mod.split('.').join('/') + '.lean';
+      const srcFile = path.join(srcRoot, relPath);
+      const modBase = mod.split('.').join('/');
+      const stageBase = path.join(STDLIB_DIR, modBase);
+      const oleanOut = stageBase + '.olean';
+      const ileanOut = stageBase + '.ilean';
+      fs.mkdirSync(path.dirname(stageBase), { recursive: true });
+
+      const extraMounts = [OUT_DIR, ...cumulativeLeanPathDirs].filter(Boolean).join(':');
+      const t0 = Date.now();
+      const child = spawn(
+        'node',
+        ['--stack-size=8192', '--max-old-space-size=10240',
+         path.join(PREFLIGHT, 'trace_fs.js'),
+         '-M', '8192',
+         '-s', '8192',
+         '-o', oleanOut, '-i', ileanOut, '-R', srcRoot, srcFile],
+        {
+          cwd: srcRoot,
+          env: {
+            ...process.env,
+            LEAN_INSTALL_DIR: WASM_LEAN_ROOT,
+            LEAN_PATH: leanPathStr,
+            LEAN_EXTRA_MOUNTS: extraMounts,
+          },
+        }
+      );
+      let stdout = '', stderr = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      child.on('error', (e) => resolve({ ok: false, status: -1, ms: Date.now() - t0, stdout, stderr: stderr + '\n' + e.message, mod, modBase, stageBase }));
+      child.on('close', (code) => resolve({ ok: code === 0, status: code, ms: Date.now() - t0, stdout, stderr, mod, modBase, stageBase }));
+    });
+  }
+
+  function recordResult(r) {
+    pkgResult.durations[r.mod] = r.ms;
+    if (r.ok) {
       pkgResult.ok++;
       results.totals.compiledOk++;
-      // Track every output the compile produced — Lean v4.27 emits .olean,
-      // .olean.private, .olean.server, .ir, .ilean alongside.
       for (const ext of ['.olean', '.olean.private', '.olean.server', '.ir', '.ilean']) {
-        const f = stageBase + ext;
+        const f = r.stageBase + ext;
         if (fs.existsSync(f)) {
           stagedFiles.add(f);
-          // Also copy into the real outLib so the bundle pack picks it up.
-          const dest = path.join(outLib, modBase + ext);
+          const dest = path.join(outLib, r.modBase + ext);
           fs.mkdirSync(path.dirname(dest), { recursive: true });
           fs.copyFileSync(f, dest);
         }
       }
-      console.log(`[${pkgName}] ✓ ${mod} (${ms}ms)`);
+      console.log(`[${pkgName}] ✓ ${r.mod} (${r.ms}ms)`);
     } else {
       pkgResult.fail++;
       results.totals.compiledFail++;
-      console.error(`[${pkgName}] ✗ ${mod} (${ms}ms) status=${proc.status}`);
-      // Print stdout AND stderr — Lean's diagnostic messages go to stdout
-      // by default (the harness routes Module.print there).
-      const so = (proc.stdout || '').slice(0, 1000);
-      const se = (proc.stderr || '').slice(0, 1000);
+      console.error(`[${pkgName}] ✗ ${r.mod} (${r.ms}ms) status=${r.status}`);
+      const so = (r.stdout || '').slice(0, 1000);
+      const se = (r.stderr || '').slice(0, 1000);
       if (so) console.error('  stdout:', so);
       if (se) console.error('  stderr:', se);
-      if (ABORT_ON_FAIL) { results.packages.push(pkgResult); writeReport(); process.exit(5); }
     }
   }
+
+  // Topo-aware worker pool. Maintain a ready queue of modules with all
+  // in-package deps satisfied; up to CONCURRENCY workers pull from it.
+  // When a module completes, its dependents whose remaining-deps drop to
+  // zero get added to the ready queue.
+  if (CONCURRENCY === 1) {
+    // Strict sequential — preserves existing behavior bit-for-bit.
+    for (const mod of modOrder) {
+      if (ABORT_ON_FAIL && results.totals.compiledFail > 0) break;
+      const r = await compileOne(mod);
+      recordResult(r);
+      if (!r.ok && ABORT_ON_FAIL) { results.packages.push(pkgResult); writeReport(); process.exit(5); }
+    }
+  } else {
+    console.log(`[${pkgName}] CONCURRENCY=${CONCURRENCY}`);
+    const remaining = new Map(); // mod -> Set<unfinished dep>
+    const dependents = new Map(); // mod -> Set<dependent>
+    for (const [mod, deps] of graph.entries()) {
+      remaining.set(mod, new Set(deps));
+      for (const d of deps) {
+        if (!dependents.has(d)) dependents.set(d, new Set());
+        dependents.get(d).add(mod);
+      }
+    }
+    const ready = [];
+    for (const [mod, deps] of remaining.entries()) if (deps.size === 0) ready.push(mod);
+    let inFlight = 0;
+    let totalDone = 0;
+    const totalCount = remaining.size;
+    let aborted = false;
+    await new Promise((finishPkg) => {
+      function pump() {
+        if (aborted && inFlight === 0) { finishPkg(); return; }
+        while (!aborted && inFlight < CONCURRENCY && ready.length > 0) {
+          const mod = ready.shift();
+          inFlight++;
+          compileOne(mod).then((r) => {
+            recordResult(r);
+            inFlight--;
+            totalDone++;
+            if (!r.ok && ABORT_ON_FAIL) { aborted = true; pump(); return; }
+            // Mark mod's dependents as one-step-closer-to-ready.
+            for (const dep of (dependents.get(mod) ?? [])) {
+              const remDeps = remaining.get(dep);
+              remDeps.delete(mod);
+              if (remDeps.size === 0) ready.push(dep);
+            }
+            if (totalDone === totalCount) finishPkg();
+            else pump();
+          });
+        }
+        if (!aborted && inFlight === 0 && totalDone < totalCount && ready.length === 0) {
+          // Stuck — likely a cycle the topo sort broke arbitrarily; nothing
+          // ready, nothing in flight, more to do. Bail with diagnostic.
+          console.error(`[${pkgName}] scheduler stuck: ${totalDone}/${totalCount} done, none ready`);
+          for (const [mod, deps] of remaining.entries()) {
+            if (deps.size > 0) console.error(`  ${mod} still waits on: ${[...deps].join(', ')}`);
+          }
+          aborted = true;
+          finishPkg();
+        }
+      }
+      pump();
+    });
+    if (aborted && ABORT_ON_FAIL && results.totals.compiledFail > 0) {
+      results.packages.push(pkgResult); writeReport(); process.exit(5);
+    }
+  }
+
   cumulativeLeanPathDirs.push(outLib);
   results.packages.push(pkgResult);
 }
@@ -327,3 +389,4 @@ function writeReport() {
 writeReport();
 console.log('[cross-compile] totals:', JSON.stringify(results.totals));
 process.exit(results.totals.compiledFail > 0 ? 6 : 0);
+})().catch((e) => { console.error('[cross-compile] fatal:', e); process.exit(7); });
