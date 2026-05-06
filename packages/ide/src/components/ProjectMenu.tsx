@@ -95,6 +95,54 @@ export function ProjectMenu() {
     }
   }
 
+  // Pull a project from the CDN stub (server's /cdn/projects/<id>/...).
+  // CDN-hosted projects ship pre-compiled wasm32 oleans, so the browser-mode
+  // compile path can elaborate them directly with no local build step.
+  // Single round-trip: list available, prompt user, fetch sources + oleans.
+  async function importFromCdn() {
+    setBusy(true);
+    try {
+      const listR = await fetch('/cdn/projects');
+      if (!listR.ok) { alert('CDN list failed: ' + listR.status); return; }
+      const { projects } = await listR.json() as { projects: { id: string; name: string; sourceCount: number; oleansBundleBytes: number }[] };
+      if (!projects.length) {
+        alert('No projects available on the CDN. Add one under cdn/projects/<slug>/.');
+        return;
+      }
+      const summary = projects
+        .map((p, i) => `  ${i + 1}. ${p.id} — ${p.sourceCount} files, ${(p.oleansBundleBytes / 1048576).toFixed(1)} MB oleans`)
+        .join('\n');
+      const pick = prompt(
+        'Available wasm32-compiled projects:\n\n' + summary + '\n\nEnter project id:',
+        projects[0]?.id ?? ''
+      );
+      if (!pick) return;
+      const proj = projects.find((p) => p.id === pick);
+      if (!proj) { alert('No such project on CDN: ' + pick); return; }
+      const [srcR, bundleR] = await Promise.all([
+        fetch(`/cdn/projects/${encodeURIComponent(proj.id)}/sources.json`),
+        fetch(`/cdn/projects/${encodeURIComponent(proj.id)}/oleans.bundle`),
+      ]);
+      if (!srcR.ok) { alert('CDN sources fetch failed: ' + srcR.status); return; }
+      if (!bundleR.ok) { alert('CDN oleans fetch failed: ' + bundleR.status); return; }
+      const manifest = await srcR.json() as { name: string; files: { path: string; content: string }[] };
+      const bundleBytes = new Uint8Array(await bundleR.arrayBuffer());
+      dispatch(importProject({
+        name: manifest.name,
+        root: 'cdn://' + proj.id,
+        files: manifest.files,
+      }));
+      if (bundleBytes.byteLength > 4) {
+        const id = (window as any).__store?.getState()?.projects?.currentId;
+        if (id) setProjectOleansBundle(id, bundleBytes);
+      }
+    } catch (e: any) {
+      alert('CDN import error: ' + (e?.message ?? String(e)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <nav className="menu" aria-label="project menu">
       <h1>Lean IDE</h1>
@@ -133,8 +181,11 @@ export function ProjectMenu() {
       )}
 
       <button onClick={() => dispatch(addScratchProject(undefined))} title="new scratch project">+ new</button>
-      <button onClick={importFromPath} disabled={busy} title="import a project from disk">
-        {busy ? 'importing…' : '↓ import…'}
+      <button onClick={importFromPath} disabled={busy} title="import a project from disk (sources only — oleans must be wasm32-built)">
+        {busy ? 'importing…' : '↓ from disk…'}
+      </button>
+      <button onClick={importFromCdn} disabled={busy} title="download a wasm32-prebuilt project from the CDN">
+        {busy ? '…' : '☁ from CDN…'}
       </button>
       {current && (
         <button onClick={startRename} title="rename current project">✎ rename</button>

@@ -1,0 +1,9 @@
+{
+  "name": "hello-wasm",
+  "files": [
+    {
+      "path": "Main.lean",
+      "content": "-- Trivial demo project hosted on the CDN.\n-- Replace this directory contents with real wasm32-built\n-- artifacts when they exist.\n\ndef greet (name : String) : String := \"hello \" ++ name\n\n#eval greet \"wasm\"\n"
+    }
+  ]
+}

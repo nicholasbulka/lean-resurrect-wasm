@@ -17,6 +17,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, 'public');
 const VENDOR = path.resolve(__dirname, '../../vendor/lean-linux_wasm32');
 const WORKSPACE = path.resolve(__dirname, '../..');
+// CDN stub: simulates a remote host for wasm32-compiled Lean projects.
+// See cdn/README.md.
+const CDN_ROOT = path.resolve(__dirname, '../../cdn');
 const HARNESS = path.join(WORKSPACE, 'preflight/trace_fs.js');
 // React IDE built output. If not present, `/` falls back to the raw harness.
 const IDE_DIST = path.resolve(__dirname, '../ide/dist');
@@ -422,6 +425,77 @@ async function handleProjectOleans(req, res) {
   res.end(body);
 }
 
+// GET /cdn/projects
+//   reply: { projects: [{ id, name, sourceCount, oleansBundleBytes }, ...] }
+// Lists every directory under cdn/projects/ that has a sources.json. The
+// IDE's "from CDN" flow polls this to populate its picker.
+function handleCdnProjectList(req, res) {
+  let entries = [];
+  try {
+    const dirs = fs.readdirSync(path.join(CDN_ROOT, 'projects'), { withFileTypes: true });
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue;
+      const slug = d.name;
+      const projDir = path.join(CDN_ROOT, 'projects', slug);
+      const srcPath = path.join(projDir, 'sources.json');
+      if (!fs.existsSync(srcPath)) continue;
+      let manifest;
+      try { manifest = JSON.parse(fs.readFileSync(srcPath, 'utf8')); } catch (_) { continue; }
+      const oleansPath = path.join(projDir, 'oleans.bundle');
+      let oleansBundleBytes = 0;
+      try { oleansBundleBytes = fs.statSync(oleansPath).size; } catch (_) {}
+      entries.push({
+        id: slug,
+        name: manifest.name || slug,
+        sourceCount: Array.isArray(manifest.files) ? manifest.files.length : 0,
+        oleansBundleBytes,
+      });
+    }
+  } catch (_) { /* CDN dir missing; serve empty list */ }
+  const body = JSON.stringify({ projects: entries });
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'Cache-Control': 'no-store',
+  });
+  res.end(body);
+}
+
+// GET /cdn/projects/<id>/sources.json
+// GET /cdn/projects/<id>/oleans.bundle
+// Plain static file serving from cdn/projects/<id>/. The CDN host is
+// responsible for ensuring oleans.bundle is wasm32-compatible — the
+// IDE skips the toolchain compatibility check for CDN imports (unlike
+// /api/project/oleans which validates local disk projects).
+function handleCdnProjectAsset(req, res, url) {
+  const rel = url.pathname.slice('/cdn/projects/'.length);
+  const target = path.join(CDN_ROOT, 'projects', rel);
+  const resolved = path.resolve(target);
+  if (!resolved.startsWith(path.resolve(path.join(CDN_ROOT, 'projects')) + path.sep) &&
+      resolved !== path.resolve(path.join(CDN_ROOT, 'projects'))) {
+    res.writeHead(403); res.end('forbidden'); return;
+  }
+  if (!fs.existsSync(resolved)) { res.writeHead(404); res.end('not found'); return; }
+  // Mime by extension; default to octet-stream for .bundle.
+  let mime = 'application/octet-stream';
+  if (rel.endsWith('.json')) mime = 'application/json; charset=utf-8';
+  const stat = fs.statSync(resolved);
+  // CDN files are conceptually content-addressable, so cache them
+  // aggressively the same way /vendor/* is cached.
+  res.writeHead(200, {
+    'Content-Type': mime,
+    'Content-Length': stat.size,
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'Cache-Control': 'public, max-age=86400, immutable',
+  });
+  fs.createReadStream(resolved).pipe(res);
+}
+
 async function handleProjectScan(req, res) {
   if (req.method !== 'POST') {
     res.writeHead(405, { 'Content-Type': 'text/plain' });
@@ -503,6 +577,8 @@ const srv = http.createServer((req, res) => {
   if (url.pathname === '/api/compile') return handleCompile(req, res);
   if (url.pathname === '/api/project/scan') return handleProjectScan(req, res);
   if (url.pathname === '/api/project/oleans') return handleProjectOleans(req, res);
+  if (url.pathname === '/cdn/projects') return handleCdnProjectList(req, res);
+  if (url.pathname.startsWith('/cdn/projects/')) return handleCdnProjectAsset(req, res, url);
   let target;
   if (url.pathname === '/vendor/manifest.json') {
     const body = JSON.stringify(getManifest());
