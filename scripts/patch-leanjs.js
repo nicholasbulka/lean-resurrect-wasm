@@ -91,8 +91,13 @@ const prefix = `// LEAN_NODEFS_PATCHED
         };
       }
       if (typeof self.__filename === 'undefined') {
-        self.__filename = '/lean';
-        self.__dirname = '/';
+        // Make this deep enough that IO.appDir = '/lean/bin', and
+        // (IO.appDir).parent = '/lean'. Lean's getBuildDir
+        // (Lean/Util/Path.lean:81) does `(← IO.appDir).parent |>.get!`
+        // and panics if .parent is none — which happens if __filename
+        // is shallow like '/lean' (parent of '/' is none).
+        self.__filename = '/lean/bin/lean';
+        self.__dirname = '/lean/bin';
       }
       var existing0 = (typeof globalThis.Module !== 'undefined') ? globalThis.Module : (typeof Module !== 'undefined' ? Module : {});
       Module = Object.assign({ noInitialRun: true, noExitRuntime: false }, existing0);

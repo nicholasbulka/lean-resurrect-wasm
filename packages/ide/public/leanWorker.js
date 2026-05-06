@@ -44,8 +44,12 @@ function installNodeShim() {
     };
   }
   if (typeof self.__filename === 'undefined') {
-    self.__filename = '/lean';
-    self.__dirname = '/';
+    // Make this deep enough that IO.appDir = '/lean/bin', and
+    // (IO.appDir).parent = '/lean' — required by Lean's
+    // getBuildDir (Lean/Util/Path.lean:81) which calls .get!
+    // on the parent and panics if it's none.
+    self.__filename = '/lean/bin/lean';
+    self.__dirname = '/lean/bin';
   }
 }
 
@@ -99,13 +103,21 @@ function setupModule(leanJsBaseUrl, leanJsUrl, oleanBytes) {
         };
         // ENV: Lean uses --print-libdir or LEAN_PATH to find stdlib;
         // there's no real install prefix here, so point LEAN_PATH at
-        // /lib/lean where preRun stages oleans.
-        const ENV = Module.ENV || {};
+        // /lib/lean where preRun stages oleans. Assign back onto Module.ENV
+        // (the `|| {}` fallback creates a detached object otherwise).
+        if (!Module.ENV) Module.ENV = {};
+        const ENV = Module.ENV;
         for (const [k, v] of Object.entries(self.process.env || {})) {
           if (v != null) ENV[k] = String(v);
         }
         ENV.LEAN_PATH = '/lib/lean';
         ENV.LEAN_SYSROOT = '/';
+        // Clear emcc's getEnvStrings cache so subsequent getenv()
+        // reads see what we just set (rather than a snapshot from
+        // before preRun).
+        if (Module.getEnvStrings && Module.getEnvStrings.strings) {
+          Module.getEnvStrings.strings = undefined;
+        }
         // Stage oleans.
         for (const { path, bytes } of oleanBytes) {
           const full = '/lib/lean/' + path;
@@ -114,6 +126,12 @@ function setupModule(leanJsBaseUrl, leanJsUrl, oleanBytes) {
         }
         try { FS.mkdirTree('/work'); } catch (_) {}
         try { FS.mkdirTree('/home/user'); } catch (_) {}
+        // Lean's getBuildDir computes `(IO.appDir).parent.get!` from
+        // __filename = /lean/bin/lean, returning /lean. Some downstream
+        // code stats /lean/bin, so create the directory tree even
+        // though we keep the actual oleans at /lib/lean.
+        try { FS.mkdirTree('/lean/bin'); } catch (_) {}
+        try { FS.mkdirTree('/lean/lib/lean'); } catch (_) {}
       },
     ],
     onAbort: (what) => {
@@ -248,6 +266,15 @@ async function init(leanJsUrl, manifestUrl, cache) {
     const beforeLen = s.length;
     s = s.replace(PATCH_EM_ASM_OLD, PATCH_EM_ASM_NEW);
     if (s.length !== beforeLen) console.log('[leanWorker] stripped CLI Node-check EM_ASM');
+    // emcc's runtime does `var ENV={};Module["ENV"]=ENV;` which CLOBBERS
+    // any Module.ENV we pre-set in setupModule / the patched prefix.
+    // Replace with a preserve-pre-existing variant so our LEAN_PATH /
+    // LEAN_SYSROOT survive into Lean's IO.getEnv calls.
+    const PATCH_ENV_OLD = 'var ENV={};Module["ENV"]=ENV;Module["ENV"]=ENV;';
+    const PATCH_ENV_NEW = 'var ENV=Module["ENV"]||{};Module["ENV"]=ENV;';
+    const beforeEnv = s.length;
+    s = s.replace(PATCH_ENV_OLD, PATCH_ENV_NEW);
+    if (s.length !== beforeEnv) console.log('[leanWorker] preserved pre-existing Module.ENV');
     return s;
   })();
 
