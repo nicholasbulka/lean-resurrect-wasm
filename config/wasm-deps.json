@@ -132,6 +132,24 @@
         }
       ]
     },
+    "aesop-v4.27.0-2026-04": {
+      "description": "leanprover-community/aesop — proof automation tactic. Depends on batteries (must be built first; the resume mode will pick it up from cdn/projects/batteries-v4.27.0-2026-04 if its install-prefix is restaged).",
+      "topLevel": "Aesop",
+      "cdnSlug": "aesop-v4.27.0-2026-04",
+      "dependsOn": ["batteries-v4.27.0-2026-04"],
+      "deps": [
+        {
+          "name": "batteries",
+          "url": "https://github.com/leanprover-community/batteries",
+          "rev": "b25b36a7caf8e237e7d1e6121543078a06777c8a"
+        },
+        {
+          "name": "aesop",
+          "url": "https://github.com/leanprover-community/aesop",
+          "rev": "cb837cc26236ada03c81837bebe0acd9c70ced7d"
+        }
+      ]
+    },
     "li-criterion": {
       "description": "Li's Criterion formalization. Depends on mathlib-v4.27.0-2026-04 (must be built first).",
       "topLevel": "LiCriterion",

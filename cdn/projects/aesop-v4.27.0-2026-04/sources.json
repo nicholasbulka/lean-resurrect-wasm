@@ -1,0 +1,9 @@
+{
+  "name": "aesop-v4.27.0-2026-04",
+  "files": [
+    {
+      "path": "Main.lean",
+      "content": "-- aesop is the proof-automation tactic for Lean 4.\n-- This bundle ships ONLY Aesop.* — Batteries.* lives in its own bundle.\n-- For a real elaboration the IDE would need both staged together.\n\nimport Aesop\n\n#check @Aesop.RuleSet\n#check @Aesop.Frontend.RuleSetMember\n"
+    }
+  ]
+}
