@@ -1,0 +1,9 @@
+{
+  "name": "batteries-v4.27.0-2026-04",
+  "files": [
+    {
+      "path": "Main.lean",
+      "content": "-- Smoke test for the wasm32-built batteries bundle.\n-- batteries is the largest non-stub project we've built end-to-end:\n-- 173 oleans (.olean / .olean.private / .olean.server / .ir / .ilean) packed\n-- to ~75 MB. Importing it from a user file proves cross-compile + bundle\n-- + CDN + IDE consumption all work at production-shape paths.\n\nimport Batteries\n\nopen Batteries\n\n#check @Batteries.HashMap\n#check @Batteries.RBMap\n#check @Batteries.AssocList\n"
+    }
+  ]
+}

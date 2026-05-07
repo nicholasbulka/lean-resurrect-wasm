@@ -155,16 +155,42 @@ function moduleNameFromRelPath(rel) {
 //   public meta import Foo.Bar
 //   private meta import Foo.Bar
 //   @[deprecated] import Foo.Bar
-// Modifiers can appear in any combination + order before the `import` keyword.
+// Modifiers can appear in any combination / order before the `import` keyword.
 const IMPORT_RE = /^\s*(?:public\s+|private\s+|meta\s+|@\[[^\]]*\]\s*)*import\s+(.+?)\s*(?:--.*)?$/;
+// Match an `import ...` example sitting INSIDE a docstring's markdown code
+// fence ("```\nimport ...\n```"); we mustn't treat those as real imports.
+// Also block comments `/- ... -/` (which Lean nests). Track both states
+// across lines so a usage example inside a `/-! ... -/` doc-comment
+// containing ```...``` doesn't appear to add fictitious deps.
 function parseImports(source) {
   const out = [];
+  let blockCommentDepth = 0;
+  let inFence = false;
   for (const line of source.split(/\r?\n/)) {
+    // Heuristic comment / fence tracking — character-perfect Lean lexing
+    // would be ideal, but for the import-extraction use case this is
+    // robust against the actual cases that bit us:
+    //   - /-... -/ block comments
+    //   - /-! ... -/ doc comments containing ```import ...``` blocks
     const trimmed = line.trim();
+
+    // Toggle markdown code fence on lines starting with ``` (Lean docstrings
+    // use this for usage examples; the `import` lines inside aren't real).
+    if (/^```/.test(trimmed)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+
+    // Block-comment open / close. We don't try to handle them mid-line —
+    // these always sit on their own line in practice for top-level
+    // doc/banner comments, which is what causes false positives.
+    if (/^\/-/.test(trimmed) && !/-\/\s*$/.test(trimmed)) { blockCommentDepth++; continue; }
+    if (blockCommentDepth > 0) {
+      if (/-\/\s*$/.test(trimmed)) blockCommentDepth--;
+      continue;
+    }
+
     if (!trimmed || trimmed.startsWith('--')) continue;
     const m = IMPORT_RE.exec(line);
     if (!m) continue;
-    // Multiple imports on one line, space-separated.
     for (const tok of m[1].split(/\s+/)) {
       if (tok && /^[A-Za-z_][A-Za-z0-9_'.]*$/.test(tok)) out.push(tok);
     }
@@ -289,6 +315,25 @@ for (const pkg of packagesToBuild) {
       const stageBase = path.join(STDLIB_DIR, modBase);
       const oleanOut = stageBase + '.olean';
       const ileanOut = stageBase + '.ilean';
+
+      // Resume: if outLib already has this module's .olean from a prior
+      // run, copy it back into install-prefix (so dependents can find it
+      // when their own compile runs) and skip the lean invocation.
+      const outBase = path.join(outLib, modBase);
+      if (fs.existsSync(outBase + '.olean')) {
+        fs.mkdirSync(path.dirname(stageBase), { recursive: true });
+        for (const ext of ['.olean', '.olean.private', '.olean.server', '.ir', '.ilean']) {
+          const out = outBase + ext;
+          const stage = stageBase + ext;
+          if (fs.existsSync(out) && !fs.existsSync(stage)) {
+            fs.copyFileSync(out, stage);
+            stagedFiles.add(stage);
+          }
+        }
+        resolve({ ok: true, status: 0, ms: 0, stdout: '', stderr: '', mod, modBase, stageBase, resumed: true });
+        return;
+      }
+
       fs.mkdirSync(path.dirname(stageBase), { recursive: true });
 
       const extraMounts = [OUT_DIR, ...cumulativeLeanPathDirs].filter(Boolean).join(':');
@@ -332,7 +377,7 @@ for (const pkg of packagesToBuild) {
           fs.copyFileSync(f, dest);
         }
       }
-      console.log(`[${pkgName}] ✓ ${r.mod} (${r.ms}ms)`);
+      console.log(`[${pkgName}] ${r.resumed ? '↻' : '✓'} ${r.mod} (${r.ms}ms)`);
     } else {
       pkgResult.fail++;
       results.totals.compiledFail++;
