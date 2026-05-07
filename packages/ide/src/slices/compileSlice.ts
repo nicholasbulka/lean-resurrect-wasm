@@ -21,10 +21,11 @@ export interface CompileRequest {
   source: string;
   libraryPaths?: string[];
   mode?: 'server' | 'browser';
-  /** Optional packed olean bundle to stage into MEMFS for this compile.
-   * Used so a project's prebuilt .lake/build/lib/lean/* is available to
-   * resolve project-internal imports like `import Lc.LiCriterion.Basic`. */
-  projectOleansBundle?: Uint8Array;
+  /** Optional packed olean bundles to stage into MEMFS for this compile.
+   * Each bundle is independently parsed and unpacked under /work/lib/lean.
+   * Multiple bundles let a project import across dep packages (e.g.
+   * batteries + aesop + Mathlib all at once). */
+  projectOleansBundles?: Uint8Array[];
 }
 
 /** Sub-state for long-running phases (mostly the browser path's bootstrap). */
@@ -74,7 +75,7 @@ export const compileSource = createAsyncThunk(
       const { compileInBrowser } = await import('../lib/leanWasm');
       return await compileInBrowser(req.source, {
         libraryPaths: req.libraryPaths,
-        projectOleansBundle: req.projectOleansBundle,
+        projectOleansBundles: req.projectOleansBundles,
         onProgress: (p: CompileProgress) => dispatch(slice.actions.setProgress(p)),
       });
     }

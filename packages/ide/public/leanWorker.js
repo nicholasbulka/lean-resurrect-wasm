@@ -397,7 +397,7 @@ async function __leanInitRuntime(leanJsUrl, manifestUrl, cache) {
 
 // --- per-compile entry: re-arm output capture, write source, run main -----
 
-async function __leanRunCompile(requestId, source, libraryPaths, projectOleansBundle) {
+async function __leanRunCompile(requestId, source, libraryPaths, projectOleansBundles) {
   const M = self.Module;
   if (!M || !M.calledRun) {
     postMessage({ type: 'error', requestId, error: 'leanWorker: WASM not initialized' });
@@ -425,17 +425,22 @@ async function __leanRunCompile(requestId, source, libraryPaths, projectOleansBu
   const FS = M.FS;
   const enc = new TextEncoder();
 
-  // Stage project's prebuilt oleans (if any) into MEMFS at /work/lib/lean
-  // and prepend that to LEAN_PATH so imports of project-internal modules
-  // (e.g. `import Lc.LiCriterion.Basic`) resolve. Bundle format matches
-  // /vendor/oleans.bundle: u32 count; per entry u16 pathLen, path, u32
-  // dataLen, data.
+  // Stage every prebuilt-oleans bundle the IDE shipped into MEMFS at
+  // /work/lib/lean. Bundle wire format: u32 count; per entry u16
+  // pathLen, path bytes, u32 dataLen, data bytes. Multiple bundles
+  // unpack into the same dir; cross-bundle imports resolve naturally
+  // because /work/lib/lean is on LEAN_PATH (set in setupModule preRun
+  // and the patched lean.js prefix).
   const projectLibRoot = '/work/lib/lean';
-  if (projectOleansBundle && projectOleansBundle.byteLength > 4) {
-    try { FS.mkdirTree(projectLibRoot); } catch (_) {}
-    const buf = projectOleansBundle instanceof Uint8Array
-      ? projectOleansBundle
-      : new Uint8Array(projectOleansBundle);
+  const bundles = Array.isArray(projectOleansBundles)
+    ? projectOleansBundles
+    : (projectOleansBundles ? [projectOleansBundles] : []); // back-compat
+  if (bundles.length) try { FS.mkdirTree(projectLibRoot); } catch (_) {}
+  let totalStaged = 0;
+  for (let bi = 0; bi < bundles.length; bi++) {
+    const bundle = bundles[bi];
+    if (!bundle || bundle.byteLength <= 4) continue;
+    const buf = bundle instanceof Uint8Array ? bundle : new Uint8Array(bundle);
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     const dec = new TextDecoder();
     const count = dv.getUint32(0, true);
@@ -449,10 +454,10 @@ async function __leanRunCompile(requestId, source, libraryPaths, projectOleansBu
       try { FS.mkdirTree(full.slice(0, full.lastIndexOf('/'))); } catch (_) {}
       FS.writeFile(full, bytes);
     }
-    console.log('[leanWorker] staged ' + count + ' project oleans at ' + projectLibRoot);
-    // /work/lib/lean is already on LEAN_PATH (set in setupModule preRun
-    // and the patched lean.js prefix), so no env mutation needed here.
+    totalStaged += count;
+    console.log('[leanWorker] staged bundle ' + (bi + 1) + '/' + bundles.length + ': ' + count + ' oleans');
   }
+  if (totalStaged) console.log('[leanWorker] staged ' + totalStaged + ' total oleans across ' + bundles.length + ' bundles at ' + projectLibRoot);
 
   FS.writeFile('/work/Input.lean', enc.encode(source));
 
@@ -572,7 +577,7 @@ self.onmessage = (event) => {
         return;
       }
       await __leanInitPromise;
-      __leanRunCompile(msg.requestId, msg.source, msg.libraryPaths, msg.projectOleansBundle);
+      __leanRunCompile(msg.requestId, msg.source, msg.libraryPaths, msg.projectOleansBundles ?? msg.projectOleansBundle);
     })();
     return;
   }

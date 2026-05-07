@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../store';
 import {
   addScratchProject, deleteProject, importProject, renameProject, selectProject,
-  setProjectOleansBundle,
+  setProjectOleansBundle, setProjectOleansBundles,
 } from '../slices/projectsSlice';
 import { setView, setCompileMode, type CompileMode } from '../slices/uiSlice';
 
@@ -113,28 +113,46 @@ export function ProjectMenu() {
         .map((p, i) => `  ${i + 1}. ${p.id} — ${p.sourceCount} files, ${(p.oleansBundleBytes / 1048576).toFixed(1)} MB oleans`)
         .join('\n');
       const pick = prompt(
-        'Available wasm32-compiled projects:\n\n' + summary + '\n\nEnter project id:',
+        'Available wasm32-compiled projects:\n\n' + summary + '\n' +
+        '\nEnter project id, OR a comma-separated list to combine bundles\n' +
+        '(e.g. "aesop-v4.27.0-2026-04,batteries-v4.27.0-2026-04").\n' +
+        'The first slug becomes the project (its sources are loaded);\n' +
+        'every slug\'s oleans.bundle is staged into MEMFS.\n',
         projects[0]?.id ?? ''
       );
       if (!pick) return;
-      const proj = projects.find((p) => p.id === pick);
-      if (!proj) { alert('No such project on CDN: ' + pick); return; }
-      const [srcR, bundleR] = await Promise.all([
-        fetch(`/cdn/projects/${encodeURIComponent(proj.id)}/sources.json`),
-        fetch(`/cdn/projects/${encodeURIComponent(proj.id)}/oleans.bundle`),
+      const slugs = pick.split(',').map((s) => s.trim()).filter(Boolean);
+      const primary = projects.find((p) => p.id === slugs[0]);
+      if (!primary) { alert('No such project on CDN: ' + slugs[0]); return; }
+      // Validate all slugs first.
+      for (const s of slugs) {
+        if (!projects.find((p) => p.id === s)) { alert('No such project on CDN: ' + s); return; }
+      }
+      // Fetch primary sources + every bundle in parallel.
+      const [srcR, ...bundleResps] = await Promise.all([
+        fetch(`/cdn/projects/${encodeURIComponent(primary.id)}/sources.json`),
+        ...slugs.map((s) => fetch(`/cdn/projects/${encodeURIComponent(s)}/oleans.bundle`)),
       ]);
       if (!srcR.ok) { alert('CDN sources fetch failed: ' + srcR.status); return; }
-      if (!bundleR.ok) { alert('CDN oleans fetch failed: ' + bundleR.status); return; }
+      for (let i = 0; i < bundleResps.length; i++) {
+        if (!bundleResps[i].ok) {
+          alert(`CDN oleans fetch failed for ${slugs[i]}: ${bundleResps[i].status}`);
+          return;
+        }
+      }
       const manifest = await srcR.json() as { name: string; files: { path: string; content: string }[] };
-      const bundleBytes = new Uint8Array(await bundleR.arrayBuffer());
+      const bundleBuffers = await Promise.all(bundleResps.map((r) => r.arrayBuffer()));
+      const bundleBytes = bundleBuffers
+        .map((b) => new Uint8Array(b))
+        .filter((b) => b.byteLength > 4);
       dispatch(importProject({
-        name: manifest.name,
-        root: 'cdn://' + proj.id,
+        name: slugs.length > 1 ? `${manifest.name} (+${slugs.length - 1})` : manifest.name,
+        root: 'cdn://' + slugs.join('+'),
         files: manifest.files,
       }));
-      if (bundleBytes.byteLength > 4) {
+      if (bundleBytes.length) {
         const id = (window as any).__store?.getState()?.projects?.currentId;
-        if (id) setProjectOleansBundle(id, bundleBytes);
+        if (id) setProjectOleansBundles(id, bundleBytes);
       }
     } catch (e: any) {
       alert('CDN import error: ' + (e?.message ?? String(e)));

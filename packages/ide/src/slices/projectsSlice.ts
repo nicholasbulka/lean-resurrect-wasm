@@ -36,13 +36,34 @@ export interface Project {
 // Lives outside the Redux state so RTK's serialization warnings don't
 // fire on each render; the IDE never persists or replays this — it's
 // re-fetched whenever a project is re-imported.
-const __projectOleansByProject = new Map<string, Uint8Array>();
+//
+// A project can have MULTIPLE bundles attached (e.g. mathlib + batteries
+// + aesop + … for a project that imports across the dep graph). The
+// worker stages each into /work/lib/lean/ in turn so cross-bundle
+// imports resolve.
+const __projectOleansByProject = new Map<string, Uint8Array[]>();
+
+export function setProjectOleansBundles(projectId: string, bundles: Uint8Array[] | null) {
+  if (bundles && bundles.length) __projectOleansByProject.set(projectId, bundles);
+  else __projectOleansByProject.delete(projectId);
+}
+export function getProjectOleansBundles(projectId: string): Uint8Array[] {
+  return __projectOleansByProject.get(projectId) ?? [];
+}
+export function appendProjectOleansBundle(projectId: string, bytes: Uint8Array) {
+  const cur = __projectOleansByProject.get(projectId) ?? [];
+  cur.push(bytes);
+  __projectOleansByProject.set(projectId, cur);
+}
+
+// Back-compat shims — single-bundle helpers used by older callers.
 export function setProjectOleansBundle(projectId: string, bytes: Uint8Array | null) {
-  if (bytes) __projectOleansByProject.set(projectId, bytes);
+  if (bytes) __projectOleansByProject.set(projectId, [bytes]);
   else __projectOleansByProject.delete(projectId);
 }
 export function getProjectOleansBundle(projectId: string): Uint8Array | null {
-  return __projectOleansByProject.get(projectId) ?? null;
+  const bundles = __projectOleansByProject.get(projectId);
+  return bundles && bundles[0] ? bundles[0] : null;
 }
 
 export interface ProjectsState {

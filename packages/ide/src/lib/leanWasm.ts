@@ -181,10 +181,10 @@ export function ensureLeanLoaded(onProgress: OnProgress = noopProgress): Promise
 
 export interface BrowserCompileOptions {
   libraryPaths?: string[];
-  /** Per-compile olean bundle (project-prebuilt .lake/build/lib/lean/*).
-   * Staged into MEMFS at /work/lib/lean before callMain so imports of
-   * project-internal modules (Lc.*, etc.) resolve. */
-  projectOleansBundle?: Uint8Array;
+  /** Per-compile olean bundles. Each is independently unpacked into
+   * /work/lib/lean/ before callMain. Multiple bundles let a project
+   * import across dep packages (e.g. batteries + aesop together). */
+  projectOleansBundles?: Uint8Array[];
   onProgress?: OnProgress;
 }
 
@@ -207,7 +207,10 @@ export async function compileInBrowser(
   if (state.initError) throw state.initError;
 
   const requestId = state.nextRequestId++;
-  const HARD_TIMEOUT_MS = 180_000;
+  // Aesop / Mathlib elaborations easily run minutes per file even from
+  // prebuilt oleans. 5 min keeps the UI from looking permanently wedged
+  // while accommodating real-world Mathlib-class compiles.
+  const HARD_TIMEOUT_MS = 300_000;
 
   return new Promise<CompileResult>((resolve, reject) => {
     const timeoutHandle = setTimeout(() => {
@@ -231,7 +234,7 @@ export async function compileInBrowser(
       requestId,
       source,
       libraryPaths: opts.libraryPaths ?? [],
-      projectOleansBundle: opts.projectOleansBundle,
+      projectOleansBundles: opts.projectOleansBundles ?? [],
     });
   });
 }
