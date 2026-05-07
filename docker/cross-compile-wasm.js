@@ -102,6 +102,16 @@ const SKIP_DIRS_GLOBAL = new Set([
   'Cache',
 ]);
 function listLeanFiles(srcRoot, compileRoot) {
+  // Note: dirent.isDirectory() returns FALSE for symlinks-to-directories.
+  // Some package layouts (e.g. our wrapped Mathlib checkout: Mathlib/ is
+  // a symlink to ~/mathlib4-ref/<rev>/) need us to follow them. Use
+  // fs.statSync (which follows symlinks) for any non-dir non-file entry.
+  function isWalkableDir(full, e) {
+    if (e.isDirectory()) return true;
+    if (!e.isSymbolicLink()) return false;
+    try { return fs.statSync(full).isDirectory(); } catch (_) { return false; }
+  }
+
   const out = [];
   if (compileRoot) {
     const rootDir = path.join(srcRoot, compileRoot);
@@ -113,7 +123,7 @@ function listLeanFiles(srcRoot, compileRoot) {
           if (e.name.startsWith('.')) continue;
           const full = path.join(dir, e.name);
           const r = rel ? path.join(rel, e.name) : e.name;
-          if (e.isDirectory()) walk(full, r);
+          if (isWalkableDir(full, e)) walk(full, r);
           else if (e.name.endsWith('.lean')) out.push(r);
         }
       }
@@ -123,10 +133,10 @@ function listLeanFiles(srcRoot, compileRoot) {
     function walk(dir, rel) {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         if (e.name.startsWith('.')) continue;
-        if (e.isDirectory() && SKIP_DIRS_GLOBAL.has(e.name)) continue;
+        if (isWalkableDir(path.join(dir, e.name), e) && SKIP_DIRS_GLOBAL.has(e.name)) continue;
         const full = path.join(dir, e.name);
         const r = rel ? path.join(rel, e.name) : e.name;
-        if (e.isDirectory()) walk(full, r);
+        if (isWalkableDir(full, e)) walk(full, r);
         else if (e.name.endsWith('.lean')) out.push(r);
       }
     }
