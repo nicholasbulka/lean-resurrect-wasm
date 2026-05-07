@@ -120,6 +120,18 @@
         }
       ]
     },
+    "Qq-v4.27.0-2026-04": {
+      "description": "leanprover-community/quote4 (Qq) — small, no Mathlib deps. Next chunk on the road to a full mathlib build.",
+      "topLevel": "Qq",
+      "cdnSlug": "Qq-v4.27.0-2026-04",
+      "deps": [
+        {
+          "name": "Qq",
+          "url": "https://github.com/leanprover-community/quote4",
+          "rev": "bd58c9efe2086d56ca361807014141a860ddbf8c"
+        }
+      ]
+    },
     "li-criterion": {
       "description": "Li's Criterion formalization. Depends on mathlib-v4.27.0-2026-04 (must be built first).",
       "topLevel": "LiCriterion",

@@ -1,0 +1,9 @@
+{
+  "name": "Qq-v4.27.0-2026-04",
+  "files": [
+    {
+      "path": "Main.lean",
+      "content": "-- Qq is Lean's quoted-expressions macro framework: typed Expr via Q(...) and q(...).\n\nimport Qq\nopen Qq\n\nexample : Q(Nat) := q(1 + 1)\n\n#check @Qq.MaybeDefEq\n"
+    }
+  ]
+}
