@@ -67,7 +67,7 @@ docker run --rm \
   -v "$ROOT/.build-cache:/cache" \
   -v "$ROOT/config:/config:ro" \
   -v "$ROOT/preflight:/preflight:ro" \
-  -v "$ROOT/vendor/lean-linux_wasm32:/wasm-lean:ro" \
+  -v "$ROOT/vendor/lean-linux_wasm32:/wasm-lean" \
   -e LIBRARY_KEY="$LIB_KEY" \
   "${ENV_FLAGS[@]}" \
   "$IMAGE"

@@ -64,7 +64,8 @@ COPY docker/build-wasm-deps-entry.sh /usr/local/bin/build-wasm-deps-entry.sh
 COPY docker/cross-compile-wasm.js /usr/local/lib/cross-compile-wasm.js
 COPY docker/pack-bundle.js /usr/local/lib/pack-bundle.js
 COPY scripts/lib/validate-pegs.js /usr/local/lib/validate-pegs.js
-RUN chmod +x /usr/local/bin/build-wasm-deps-entry.sh
+COPY scripts/lib/stub-proofwidgets-js.sh /usr/local/lib/stub-proofwidgets-js.sh
+RUN chmod +x /usr/local/bin/build-wasm-deps-entry.sh /usr/local/lib/stub-proofwidgets-js.sh
 
 ENV PEGS_FILE=/config/wasm-deps.json \
     PREFLIGHT=/preflight \

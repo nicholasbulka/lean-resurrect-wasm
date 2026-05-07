@@ -99,23 +99,37 @@ manifest against an old one to see exactly what changed.
 }
 ```
 
-## Cross-compile mechanism (TODO)
+## Cross-compile mechanism
 
-The container clones, validates, and writes a manifest correctly today.
-The actual `lake build` invocation is the open piece. Three options live
-in `docker/build-wasm-deps-entry.sh` under `CROSS_COMPILE_PATH`:
+`CROSS_COMPILE_PATH=manual` (default, the only one implemented) walks
+the dep graph topologically and invokes `preflight/trace_fs.js` per
+file. No host-arch lake tricks; works in any Linux environment with
+Node 20.
 
-- `manual` (default, recommended): walk the dep graph topologically, call
-  `node preflight/trace_fs.js -o <out.olean> -i <out.ilean> -R <pkg> <file.lean>`
-  for each `.lean` file. No host-arch lake tricks. Slow but predictable.
-- `qemu-lake`: run native lake under qemu-user with a shim that forwards
-  every `lean` invocation to the wasm32 binary. Fragile.
+Two other paths sketched in `docker/build-wasm-deps-entry.sh` for
+future investigation:
+- `qemu-lake`: run native lake under qemu-user with a shim forwarding
+  every `lean` invocation to wasm32. Fragile.
 - `xbuild`: hypothetical upstream Lean target.
 
-Until one is implemented end-to-end, runs default to `--dry-run` style
-behavior — clone + manifest, no bundle. The dep tree is left at
-`.build-cache/wasm-deps/<library-key>/` for an operator to drive
-manually if desired.
+## Cross-platform notes
+
+The build is **architecturally cross-platform**: walker uses
+`fs.readdirSync` which preserves real-case filenames, bundle paths
+land case-correct, and Lean searches case-sensitively. macOS host
+builds (case-insensitive FS) and Linux container builds (case-
+sensitive) produce equivalent bundles.
+
+**One Linux-only concern that's now fixed:** the install-prefix
+staging strategy writes oleans into `vendor/lean-linux_wasm32/lib/lean/`
+during the build (and removes them on exit). The wrapper mounts that
+dir read-write so the staging works in Docker too.
+
+**ProofWidgets npm gap:** ProofWidgets's library modules `include_str!`
+JS files produced by `lake build → npm run build`. Our pipeline
+doesn't run npm. The entry script auto-stubs the expected JS files
+via `scripts/lib/stub-proofwidgets-js.sh` post-clone; widgets won't
+be interactive at runtime, but Lean's elaboration succeeds.
 
 ## Operator notes
 

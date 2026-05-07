@@ -131,6 +131,14 @@ echo "$LIB_JSON" | jq -c '.deps[]' | while read -r dep; do
   log INFO "[$name] commit_date=$cdate"
   printf '%s\n' "$(jq -nc --arg n "$name" --arg url "$url" --arg rev "$rev" --arg cdate "$cdate" \
     '{name:$n, url:$url, rev:$rev, commitDate:$cdate, kind:"git"}')" >> "$DEPS_TRACE"
+  # Per-package post-clone hooks. ProofWidgets's library modules
+  # `include_str!` JS files produced by an npm build we don't run;
+  # stub them so Lean's elaboration still succeeds. Idempotent.
+  case "$name" in
+    proofwidgets)
+      bash /usr/local/lib/stub-proofwidgets-js.sh "$dir" 2>&1 | tee -a "$BUILDLOG" || true
+      ;;
+  esac
 done
 
 # Step 3: cross-compile.
