@@ -190,11 +190,16 @@ const wait = () => {
 };
 wait();
 
-// Safety net: if onExit never fires, kill after 10 minutes.
+// Safety net: if onExit never fires, kill after 30 minutes.
+// 10 minutes was too aggressive for Mathlib-class single-file
+// elaborations (Aesop.Stats.Basic, Aesop.Util.Tactic.Ext etc.
+// routinely cross 11 minutes during cold compile under our wasm32
+// runtime). Override via LEAN_HARNESS_TIMEOUT_MS env var.
+const HARNESS_TIMEOUT_MS = parseInt(process.env.LEAN_HARNESS_TIMEOUT_MS || '', 10) || 30 * 60_000;
 setTimeout(() => {
-  console.error('[harness] timeout — onExit never fired');
+  console.error('[harness] timeout — onExit never fired after ' + HARNESS_TIMEOUT_MS + 'ms');
   process.exit(124);
-}, 10 * 60_000);
+}, HARNESS_TIMEOUT_MS);
 
 // Surface unhandled errors with as much context as we can get.
 process.on('uncaughtException', (err) => {
