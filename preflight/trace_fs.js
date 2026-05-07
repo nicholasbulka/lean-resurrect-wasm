@@ -198,7 +198,15 @@ setTimeout(() => {
 
 // Surface unhandled errors with as much context as we can get.
 process.on('uncaughtException', (err) => {
-  console.error('[harness] uncaughtException:', err && (err.message || err));
+  // 'unwind' is Emscripten's teardown signal that Asyncify-instrumented
+  // builds throw on normal exit (specifically when Module.noExitRuntime
+  // is false and main returns). It's NOT a real failure — the .olean
+  // has already been written. Treat it as success.
+  const msg = err && (err.message || err);
+  if (msg === 'unwind' || msg === 'pthread_exit' || (err && err.name === 'ExitStatus')) {
+    process.exit(0);
+  }
+  console.error('[harness] uncaughtException:', msg);
   console.error('[harness] errno:', err && err.errno, 'code:', err && err.code);
   process.exit(43);
 });
