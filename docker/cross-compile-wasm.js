@@ -64,7 +64,14 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
 // resolve.
 function findPackageSrcRoot(pkgName, pkgRoot) {
   try {
-    if (fs.statSync(pkgRoot).isDirectory() && anyLeanUnder(pkgRoot)) return pkgRoot;
+    if (fs.statSync(pkgRoot).isDirectory() && anyLeanUnder(pkgRoot)) {
+      // Resolve to realpath so the path Lean sees matches what
+      // trace_fs.js's NODEFS mount accepts (symlinks at this level
+      // would mount the realpath but leave Lean addressing the
+      // symlinked path → "no such file or directory" inside MEMFS).
+      // See the wrapped-Mathlib setup: SCRATCH/mathlib -> <wrapped>/.
+      return fs.realpathSync(pkgRoot);
+    }
   } catch (_) {}
   return null;
 }
