@@ -1,0 +1,9 @@
+{
+  "name": "proofwidgets-v4.27.0-2026-04",
+  "files": [
+    {
+      "path": "Main.lean",
+      "content": "-- ProofWidgets wasm32-built bundle. Combine with batteries (and other deps) via the\n-- IDE's comma-separated CDN slug import to make this loadable end-to-end.\n\nimport ProofWidgets\n"
+    }
+  ]
+}
