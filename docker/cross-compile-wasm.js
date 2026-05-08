@@ -267,6 +267,34 @@ process.on('exit', () => {
   for (const f of stagedFiles) { try { fs.unlinkSync(f); } catch (_) {} }
 });
 
+// Pre-stage everything that's already in OUT_DIR into install-prefix.
+// For builds that depend on previously-built libraries (e.g. mathlib-only
+// depends on batteries+aesop+...), the deps' oleans are unpacked into
+// OUT_DIR before the script runs. Without this pre-stage, the resume
+// logic only copies modules WITHIN the current package's deps[] — so
+// batteries' oleans, while present in OUT_DIR, never reach install-
+// prefix where Lean searches. Walking OUT_DIR once at startup is cheap
+// (filesystem-bound, no compile work).
+function preStageOutDirIntoInstallPrefix() {
+  function walk(dir, rel) {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      const r = rel ? path.join(rel, e.name) : e.name;
+      if (e.isDirectory()) walk(full, r);
+      else if (/\.(olean(\.private|\.server)?|ilean|ir)$/.test(e.name)) {
+        const dest = path.join(STDLIB_DIR, r);
+        if (fs.existsSync(dest)) continue; // don't clobber stdlib's own files
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(full, dest);
+        stagedFiles.add(dest);
+      }
+    }
+  }
+  try { walk(OUT_DIR, ''); } catch (_) {}
+}
+preStageOutDirIntoInstallPrefix();
+console.log(`[cross-compile] pre-staged ${stagedFiles.size} dep files into install-prefix`);
+
 (async function main() {
 for (const pkg of packagesToBuild) {
   const pkgName = pkg.name;
