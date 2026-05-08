@@ -24,7 +24,7 @@ type-checker code is touched.**
 | Build configuration | 2 | Pass the right wasm features through `cmake` and `lake`. |
 | Codegen-vs-extern signature fixes | 8 | wasm-ld's strict signature checking surfaced ABI mismatches Lean's native build accepted silently. |
 | libuv API stubs | 2 | v4.27's Emscripten ifdef declared but didn't define some entry points; wasm-ld emits `unreachable` for missing definitions. |
-| MT=OFF runtime safety | 2 | Defensive null-guards on `g_task_manager` so a `MULTI_THREAD=OFF` build doesn't segfault on first task call. Not on the MT=ON code path we ship. |
+| MT=OFF runtime safety | 2 | **Dead code in our shipped binary.** Defensive null-guards on `g_task_manager` so a hypothetical `MULTI_THREAD=OFF` build (carried for debugging) doesn't segfault. Our `MULTI_THREAD=ON+PROXY_TO_PTHREAD=1` build never enters these branches — `g_task_manager` is always non-null. |
 | **Total unique** | **14** | (one file — `module.cpp` — appears in two patch hunks) |
 
 **Out of scope:** kernel, elaborator, parser, tactic framework,
@@ -168,13 +168,25 @@ Same pattern for `lean_uv_udp_wait_readable` and one other.
 
 ---
 
-## Category 4 — MT=OFF runtime safety
+## Category 4 — MT=OFF runtime safety (dead code in our shipped binary)
 
-These are defensive — they prevent crashes on a `MULTI_THREAD=OFF`
-build whose runtime touches the (null) `g_task_manager`. Our
-**production wasm32 build is MT=ON**, so this code never executes
-in shipped artifacts. The patches just let MT=OFF builds boot for
-debugging.
+These patches are **only reachable if someone rebuilds with
+`MULTI_THREAD=OFF`**. Our shipped wasm32 binary is built with
+`MULTI_THREAD=ON+PROXY_TO_PTHREAD=1`, where `g_task_manager` is
+always non-null after runtime init. Every guard added in this
+category is `if (!g_task_manager) { ... }`; in MT=ON the inner
+branch never runs.
+
+We carry the patches because:
+
+1. We hit `g_task_manager`-null segfaults during the early debugging
+   phase when we briefly tried MT=OFF. The guards let MT=OFF builds
+   at least boot for diagnostics.
+2. They don't affect MT=ON behavior, so removing them on the way
+   to ship would just throw away useful debugging support.
+
+If you're auditing what code actually executes in our shipped
+binary, you can ignore Category 4 entirely.
 
 ### 4.1 `src/runtime/object.cpp` (+57, ~7 deletions)
 
