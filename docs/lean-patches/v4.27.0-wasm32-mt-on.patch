@@ -1,0 +1,604 @@
+From 63203ddc0f7225e6aae8c64847e101d4b7af0b99 Mon Sep 17 00:00:00 2001
+From: nicholasbulka <nicholasbulka@gmail.com>
+Date: Thu, 30 Apr 2026 07:31:50 -0400
+Subject: [PATCH] v4.27 wasm32 patches for MT=ON browser/Node-worker target
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Real elaboration runs (#eval x for `def x : Nat := 42` returns "42") in a
+WASM build hosted by Node worker_threads, demonstrating the path to a
+static-files-only browser IDE without server-side compilation.
+
+Categories of patches:
+- Build config (CMakeLists.txt, lakefile.toml.in): MT-aware
+  EMSCRIPTEN_SETTINGS so the wasm-feature flags (-pthread, -matomics,
+  -mbulk-memory) are dropped when MULTI_THREAD=OFF and propagated to
+  Lake's .c.o.export builds when ON.
+- 8 wasm-ld signature mismatches (memory.cpp, interrupt.cpp, io.cpp,
+  module.cpp x2, compact.cpp, ir_interpreter.cpp, uv/dns.cpp,
+  uv/event_loop.cpp, uv/system.cpp) — Lean's codegen ABI and the C
+  externs disagreed on argc; WASM strict signature checking exposed it.
+- libuv stubs (uv/tcp.cpp, uv/udp.cpp): the v4.27 Emscripten ifdef
+  branch declared but didn't define several entry points; without
+  stubs wasm-ld emitted `unreachable` for each.
+- MT=OFF runtime safety nets (object.cpp, thread.h): defensive null
+  guards on g_task_manager and a missing adopt_lock_t/release() in the
+  MT=OFF unique_lock stub. Not on the MT=ON path but lets the build
+  system survive single-threaded compile attempts.
+
+Authoritative inventory and rationale per file in the host repo at
+docs (memory/v427_patch_inventory.md). Verify with
+`git -C vendor/lean4-src diff --stat` — should report 15 files, ~243/-29.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/CMakeLists.txt             | 113 +++++++++++++++++++++++++++++----
+ src/lakefile.toml.in           |   6 ++
+ src/library/ir_interpreter.cpp |   4 +-
+ src/library/module.cpp         |   9 ++-
+ src/runtime/compact.cpp        |   4 +-
+ src/runtime/interrupt.cpp      |   5 +-
+ src/runtime/io.cpp             |   8 ++-
+ src/runtime/memory.cpp         |   6 +-
+ src/runtime/object.cpp         |  64 +++++++++++++++++--
+ src/runtime/thread.h           |   7 ++
+ src/runtime/uv/dns.cpp         |   2 +-
+ src/runtime/uv/event_loop.cpp  |   4 +-
+ src/runtime/uv/system.cpp      |   2 +-
+ src/runtime/uv/tcp.cpp         |  23 +++++++
+ src/runtime/uv/udp.cpp         |  15 +++++
+ 15 files changed, 243 insertions(+), 29 deletions(-)
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index a6eaf04f..b15a0ff1 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -137,8 +137,23 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
+ 
+     # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
+     # > The simple and safe thing is to pass all -s flags at both compile and link time.
+-    set(EMSCRIPTEN_SETTINGS "-s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread -flto")
+-    string(APPEND LEANC_EXTRA_CC_FLAGS " -pthread")
++    # -matomics -mbulk-memory required at compile time for every object that
++    # will participate in -pthread / SHARED_MEMORY link. emcc's -pthread alone
++    # doesn't always propagate these to LLVM under emcc 3.1.74. Also drop
++    # -flto: with LTO the .c.o.export files are LLVM bitcode (no wasm features
++    # yet) and wasm-ld rejects them in a SHARED_MEMORY link before LTO codegen
++    # runs. Non-LTO objects pick up atomics/bulk-memory directly.
++    #
++    # When MULTI_THREAD=OFF, drop -pthread / -matomics / -mbulk-memory entirely.
++    # Otherwise emcc's "-sMAIN_MODULE + pthreads is experimental" interaction
++    # produces a binary that traps `unreachable` on first call, even when the
++    # Lean runtime itself never spawns a thread.
++    if(MULTI_THREAD)
++      set(EMSCRIPTEN_SETTINGS "-s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread -matomics -mbulk-memory")
++      string(APPEND LEANC_EXTRA_CC_FLAGS " -pthread -matomics -mbulk-memory")
++    else()
++      set(EMSCRIPTEN_SETTINGS "-s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions")
++    endif()
+     string(APPEND LEAN_EXTRA_CXX_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
+     string(APPEND LEAN_EXTRA_LINKER_FLAGS " ${EMSCRIPTEN_SETTINGS}")
+ endif()
+@@ -288,13 +303,14 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
+ index 5e8e0166..f3b29134 100644
+ --- a/CMakeLists.txt
+ +++ b/CMakeLists.txt
+-@@ -317,6 +317,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL \"GNU\")
++@@ -317,6 +317,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL \"GNU\")
+         src/unix/hurd.c)
+  endif()
+ 
+ +if(CMAKE_SYSTEM_NAME STREQUAL \"Emscripten\")
+ +  list(APPEND uv_sources
+-+       src/unix/no-proctitle.c)
+++       src/unix/no-proctitle.c
+++       src/unix/emscripten-stubs.c)
+ +endif()
+ +
+  if(CMAKE_SYSTEM_NAME STREQUAL \"Linux\")
+@@ -303,13 +319,67 @@ index 5e8e0166..f3b29134 100644
+ ")
+   string(REPLACE "\n" "\\n" LIBUV_PATCH ${LIBUV_PATCH_IN})
+ 
++  # Stub file dropped into libuv's src/unix/ alongside the patch. Emscripten
++  # has no built-in libuv platform impl, so wasm-ld emits `unreachable` for
++  # each of these symbols. Lean's runtime traps before any code runs the
++  # moment one is touched. Define them as no-ops here so the binary boots.
++  set(LIBUV_EMSCRIPTEN_STUBS_C "
++#include \"uv.h\"
++#include \"internal.h\"
++#include <time.h>
++
++int uv__platform_loop_init(uv_loop_t* loop) {
++  loop->backend_fd = -1;
++  return 0;
++}
++
++void uv__platform_loop_delete(uv_loop_t* loop) {
++  (void)loop;
++}
++
++void uv__platform_invalidate_fd(uv_loop_t* loop, int fd) {
++  (void)loop;
++  (void)fd;
++}
++
++int uv__io_check_fd(uv_loop_t* loop, int fd) {
++  (void)loop;
++  (void)fd;
++  return 0;
++}
++
++void uv__io_poll(uv_loop_t* loop, int timeout) {
++  (void)loop;
++  (void)timeout;
++}
++
++int uv__io_fork(uv_loop_t* loop) {
++  (void)loop;
++  return 0;
++}
++
++void uv__fs_event_close(uv_fs_event_t* handle) {
++  (void)handle;
++}
++
++uint64_t uv__hrtime(uv_clocktype_t type) {
++  struct timespec t;
++  (void)type;
++  if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return 0;
++  return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;
++}
++")
++  # Write the stubs file to a known build-tree location so PATCH_COMMAND
++  # can copy it into libuv's source dir.
++  file(WRITE "${CMAKE_BINARY_DIR}/libuv-emscripten-stubs.c" "${LIBUV_EMSCRIPTEN_STUBS_C}")
++
+   ExternalProject_add(libuv
+     PREFIX libuv
+     GIT_REPOSITORY https://github.com/libuv/libuv
+     # Sync version with flake.nix
+     GIT_TAG v1.48.0
+     CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DLIBUV_BUILD_TESTS=OFF -DLIBUV_BUILD_SHARED=OFF -DCMAKE_AR=${CMAKE_AR} -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_C_FLAGS=${LIBUV_EMSCRIPTEN_FLAGS}
+-	  PATCH_COMMAND git reset --hard HEAD && printf "${LIBUV_PATCH}" > patch.diff && git apply patch.diff
++	  PATCH_COMMAND git reset --hard HEAD && printf "${LIBUV_PATCH}" > patch.diff && git apply patch.diff && cp "${CMAKE_BINARY_DIR}/libuv-emscripten-stubs.c" src/unix/emscripten-stubs.c
+     BUILD_IN_SOURCE ON
+     INSTALL_COMMAND "")
+   set(LIBUV_INCLUDE_DIRS "${CMAKE_BINARY_DIR}/libuv/src/libuv/include")
+@@ -684,6 +754,12 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
+   # We set `ERROR_ON_UNDEFINED_SYMBOLS=0` because our build of LibUV does not
+   # define all symbols, see the comment about LibUV on WebAssembly further up
+   # in this file.
++  # We tried dropping MAIN_MODULE=1 / LINKABLE=1 / EXPORT_ALL=1 to avoid
++  # emcc's "MAIN_MODULE + pthreads is experimental" warning, but the
++  # resulting binary failed wasm-emscripten-finalize with a parse error.
++  # Lean's link integration depends on those flags being on. Keep them.
++  # Without pthreads (LEAN_MULTI_THREAD=OFF) the MAIN_MODULE+pthreads
++  # combo is no longer an issue, so the original flags work fine.
+   string(APPEND LEAN_EXE_LINKER_FLAGS " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=1 -s LINKABLE=1 -s EXPORT_ALL=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0")
+ endif()
+ 
+@@ -773,13 +849,19 @@ endif()
+ 
+ # use Bash version for building, use Lean version in bin/ for tests & distribution
+ configure_file("${LEAN_SOURCE_DIR}/bin/leanc.in" "${CMAKE_BINARY_DIR}/leanc.sh" @ONLY)
+-if(${STAGE} GREATER 0 AND EXISTS ${LEAN_SOURCE_DIR}/Leanc.lean AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
++if(${STAGE} GREATER 0 AND EXISTS ${LEAN_SOURCE_DIR}/Leanc.lean)
++  # Always materialize Leanc.lean into the build dir so Lake can find its
++  # srcDir (defaultTargets includes "Leanc"). The bash-driven leanc target
++  # is only useful native — under Emscripten we don't link a `leanc`
++  # executable but Lake still builds Leanc.lean as a static Lean lib.
+   configure_file("${LEAN_SOURCE_DIR}/Leanc.lean" "${CMAKE_BINARY_DIR}/leanc/Leanc.lean" @ONLY)
+-  add_custom_target(leanc ALL
+-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/leanc
+-    DEPENDS leanshared
+-    COMMAND $(MAKE) -f ${CMAKE_BINARY_DIR}/stdlib.make leanc
+-    VERBATIM)
++  if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
++    add_custom_target(leanc ALL
++      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/leanc
++      DEPENDS leanshared
++      COMMAND $(MAKE) -f ${CMAKE_BINARY_DIR}/stdlib.make leanc
++      VERBATIM)
++  endif()
+ endif()
+ 
+ file(COPY ${LEAN_SOURCE_DIR}/bin/leanmake DESTINATION ${CMAKE_BINARY_DIR}/bin)
+@@ -861,6 +943,15 @@ string(REPLACE "ROOT" "${CMAKE_BINARY_DIR}" LEANC_INTERNAL_LINKER_FLAGS "${LEANC
+ 
+ toml_escape("${LEAN_EXTRA_MAKE_OPTS}" LEAN_EXTRA_OPTS_TOML)
+ 
++# Surface emcc wasm-features flags (-pthread -matomics -mbulk-memory) to
++# Lake via lakefile.toml moreLeancArgs. Lake calls the toolchain's C compiler
++# directly for .c.o.export and bypasses leanc.sh, so we need this hook.
++if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten" AND MULTI_THREAD)
++  set(LEAN_EXTRA_LEANC_OPTS_TOML "[\"-pthread\", \"-matomics\", \"-mbulk-memory\"]")
++else()
++  set(LEAN_EXTRA_LEANC_OPTS_TOML "[]")
++endif()
++
+ if(${CMAKE_BUILD_TYPE} MATCHES "Debug|Release|RelWithDebInfo|MinSizeRel")
+   set(CMAKE_BUILD_TYPE_TOML "${CMAKE_BUILD_TYPE}")
+ else()
+diff --git a/src/lakefile.toml.in b/src/lakefile.toml.in
+index 51f1c946..dbf4a6ca 100644
+--- a/src/lakefile.toml.in
++++ b/src/lakefile.toml.in
+@@ -44,6 +44,12 @@ nativeLibDir = "lib/lean"
+ # For example, CI will set `-DwarningAsError=true` through this
+ moreLeanArgs = [${LEAN_EXTRA_OPTS_TOML}]
+ 
++# Lake invokes its toolchain's C compiler directly (not via leanc.sh wrapper)
++# when building .c.o.export. The leanc.sh wrapper's -pthread / -matomics /
++# -mbulk-memory flags don't propagate. Force them here so every .c.o.export
++# object has the wasm features required for a -sSHARED_MEMORY link.
++moreLeancArgs = ${LEAN_EXTRA_LEANC_OPTS_TOML}
++
+ # Uncomment to limit number of reported errors further in case of overwhelming cmdline output
+ #weakLeanArgs = ["-DmaxErrors=1"]
+ 
+diff --git a/src/library/ir_interpreter.cpp b/src/library/ir_interpreter.cpp
+index 321e630f..ad2c2e61 100644
+--- a/src/library/ir_interpreter.cpp
++++ b/src/library/ir_interpreter.cpp
+@@ -1202,7 +1202,9 @@ extern "C" LEAN_EXPORT obj_res lean_run_mod_init_core(b_obj_arg  sym) {
+     }
+ }
+ 
+-extern "C" LEAN_EXPORT object * lean_run_init(object * env, object * opts, object * decl, object * init_decl, object *) {
++// Drop trailing IO-world arg: Lean's calling convention doesn't pass it.
++// wasm-ld signature-mismatch trap fix.
++extern "C" LEAN_EXPORT object * lean_run_init(object * env, object * opts, object * decl, object * init_decl) {
+     return interpreter::with_interpreter<object *>(TO_REF(elab_environment, env), TO_REF(options, opts), TO_REF(name, decl), [&](interpreter & interp) {
+         return interp.run_init(TO_REF(name, decl), TO_REF(name, init_decl));
+     });
+diff --git a/src/library/module.cpp b/src/library/module.cpp
+index 97a53f87..f673f389 100644
+--- a/src/library/module.cpp
++++ b/src/library/module.cpp
+@@ -13,6 +13,7 @@ Authors: Leonardo de Moura, Gabriel Ebner, Sebastian Ullrich
+ #include <sstream>
+ #include <fstream>
+ #include <algorithm>
++#include <cstdio>
+ #include <sys/stat.h>
+ #include "runtime/thread.h"
+ #include "runtime/interrupt.h"
+@@ -104,7 +105,9 @@ struct olean_header {
+ // make sure we don't have any padding bytes, which also ensures `data` is properly aligned
+ static_assert(sizeof(olean_header) == 5 + 1 + 1 + 33 + 40 + sizeof(size_t), "olean_header must be packed");
+ 
+-extern "C" LEAN_EXPORT object * lean_save_module_data_parts(b_obj_arg mod, b_obj_arg oparts, object *) {
++// Drop trailing IO-world arg: Lean's calling convention doesn't pass it.
++// wasm-ld signature-mismatch trap fix.
++extern "C" LEAN_EXPORT object * lean_save_module_data_parts(b_obj_arg mod, b_obj_arg oparts) {
+ #ifdef LEAN_WINDOWS
+     uint32_t pid = GetCurrentProcessId();
+ #else
+@@ -206,7 +209,9 @@ struct module_file {
+     std::function<void()> m_free_data;
+ };
+ 
+-extern "C" LEAN_EXPORT object * lean_read_module_data_parts(b_obj_arg ofnames, object *) {
++// Drop trailing IO-world arg: Lean's calling convention doesn't pass it.
++// wasm-ld signature-mismatch trap fix.
++extern "C" LEAN_EXPORT object * lean_read_module_data_parts(b_obj_arg ofnames) {
+     array_ref<string_ref> fnames(ofnames, true);
+ 
+     // first read in all headers
+diff --git a/src/runtime/compact.cpp b/src/runtime/compact.cpp
+index 74b8b226..c5d8047e 100644
+--- a/src/runtime/compact.cpp
++++ b/src/runtime/compact.cpp
+@@ -513,7 +513,9 @@ extern "C" LEAN_EXPORT usize lean_compacted_region_size(usize region) {
+     return reinterpret_cast<compacted_region *>(region)->size();
+ }
+ 
+-extern "C" LEAN_EXPORT obj_res lean_compacted_region_free(usize region, object *) {
++// Drop trailing IO-world arg: Lean's calling convention doesn't pass it.
++// wasm-ld signature-mismatch trap fix.
++extern "C" LEAN_EXPORT obj_res lean_compacted_region_free(usize region) {
+     delete reinterpret_cast<compacted_region *>(region);
+     return lean_io_result_mk_ok(lean_box(0));
+ }
+diff --git a/src/runtime/interrupt.cpp b/src/runtime/interrupt.cpp
+index c1e26b31..6e027c1e 100644
+--- a/src/runtime/interrupt.cpp
++++ b/src/runtime/interrupt.cpp
+@@ -16,7 +16,10 @@ namespace lean {
+ LEAN_THREAD_VALUE(size_t, g_max_heartbeat, 0);
+ LEAN_THREAD_VALUE(size_t, g_heartbeat, 0);
+ 
+-extern "C" LEAN_EXPORT obj_res lean_internal_get_default_max_heartbeat() {
++// `obj_arg` parameter matches the Lean-side `(_ : Unit) : Nat` signature.
++// Without it, wasm-ld signature-mismatch warning manifests as `unreachable`
++// trap on the indirect call from `initialize_Lean_Shell` under LEAN_EMSCRIPTEN.
++extern "C" LEAN_EXPORT obj_res lean_internal_get_default_max_heartbeat(lean_object *) {
+ #ifdef LEAN_DEFAULT_MAX_HEARTBEAT
+     return lean_box(LEAN_DEFAULT_MAX_HEARTBEAT);
+ #else
+diff --git a/src/runtime/io.cpp b/src/runtime/io.cpp
+index 9f5e2371..271d4d1d 100644
+--- a/src/runtime/io.cpp
++++ b/src/runtime/io.cpp
+@@ -1217,7 +1217,9 @@ extern "C" LEAN_EXPORT obj_res lean_io_hard_link(b_obj_arg orig, b_obj_arg link)
+ }
+ 
+ /* createTempFile : IO (Handle × FilePath) */
+-extern "C" LEAN_EXPORT obj_res lean_io_create_tempfile(lean_object * /* w */) {
++// Lean's calling convention drops the IO world arg for this opaque; matching
++// signature is `() -> i32`. wasm-ld signature-mismatch trap fix.
++extern "C" LEAN_EXPORT obj_res lean_io_create_tempfile() {
+     char path[PATH_MAX];
+     size_t base_len = PATH_MAX;
+     int ret = uv_os_tmpdir(path, &base_len);
+@@ -1263,7 +1265,9 @@ extern "C" LEAN_EXPORT obj_res lean_io_create_tempfile(lean_object * /* w */) {
+ }
+ 
+ /* createTempDir : IO FilePath */
+-extern "C" LEAN_EXPORT obj_res lean_io_create_tempdir(lean_object * /* w */) {
++// Lean's calling convention drops the IO world arg for this opaque; matching
++// signature is `() -> i32`. wasm-ld signature-mismatch trap fix.
++extern "C" LEAN_EXPORT obj_res lean_io_create_tempdir() {
+     char path[PATH_MAX];
+     size_t base_len = PATH_MAX;
+     int ret = uv_os_tmpdir(path, &base_len);
+diff --git a/src/runtime/memory.cpp b/src/runtime/memory.cpp
+index 0a723690..59ee0e5b 100644
+--- a/src/runtime/memory.cpp
++++ b/src/runtime/memory.cpp
+@@ -114,7 +114,11 @@ namespace lean {
+ static size_t g_max_memory = 0;
+ LEAN_THREAD_VALUE(size_t, g_counter, 0);
+ 
+-extern "C" LEAN_EXPORT lean_obj_res lean_internal_get_default_max_memory() {
++// `obj_arg` parameter matches the Lean-side `(_ : Unit) : Nat` signature.
++// Without it, wasm-ld warns of a signature mismatch and the indirect call
++// from `initialize_Lean_Shell` traps `unreachable` at runtime under
++// LEAN_EMSCRIPTEN.
++extern "C" LEAN_EXPORT lean_obj_res lean_internal_get_default_max_memory(lean_object *) {
+ #ifdef LEAN_DEFAULT_MAX_MEMORY
+     return lean_box(LEAN_DEFAULT_MAX_MEMORY);
+ #else
+diff --git a/src/runtime/object.cpp b/src/runtime/object.cpp
+index c03af876..33a15b94 100644
+--- a/src/runtime/object.cpp
++++ b/src/runtime/object.cpp
+@@ -1129,6 +1129,13 @@ LEAN_EXPORT void (*g_lean_report_task_get_blocked_time)(std::chrono::nanoseconds
+ extern "C" LEAN_EXPORT b_obj_res lean_task_get(b_obj_arg t) {
+     if (object * v = lean_to_task(t)->m_value)
+         return v;
++    // MT=OFF: with no task_manager, an unresolved task value means a
++    // promise that nothing will fulfill. Trap with a wasm `unreachable`
++    // so we get a stack trace.
++    if (!g_task_manager) {
++        fprintf(stderr, "FATAL: lean_task_get: MT=OFF promise stuck (task=%p)\n", (void*)t);
++        __builtin_trap();
++    }
+     if (g_lean_report_task_get_blocked_time) {
+         std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+         g_task_manager->wait_for(lean_to_task(t));
+@@ -1186,7 +1193,8 @@ extern "C" LEAN_EXPORT obj_res lean_task_bind_core(obj_arg x, obj_arg f, unsigne
+ extern "C" LEAN_EXPORT bool lean_io_check_canceled_core() {
+     if (lean_task_object * t = g_current_task_object) {
+         lean_assert(t->m_imp); // task is being executed
+-        return t->m_imp->m_canceled || g_task_manager->shutting_down();
++        // MT=OFF: no task_manager, no shutdown signal — just check the task.
++        return t->m_imp->m_canceled || (g_task_manager && g_task_manager->shutting_down());
+     }
+     return false;
+ }
+@@ -1194,23 +1202,46 @@ extern "C" LEAN_EXPORT bool lean_io_check_canceled_core() {
+ extern "C" LEAN_EXPORT void lean_io_cancel_core(b_obj_arg t) {
+     if (lean_to_task(t)->m_value)
+         return;
+-    g_task_manager->cancel(lean_to_task(t));
++    // MT=OFF: with no task_manager, in-flight tasks can't be canceled
++    // (they ran inline and finished, or were never enqueued). No-op.
++    if (g_task_manager) g_task_manager->cancel(lean_to_task(t));
+ }
+ 
+ extern "C" LEAN_EXPORT uint8_t lean_io_get_task_state_core(b_obj_arg t) {
+     lean_task_object * o = lean_to_task(t);
+     if (!o->m_imp)
+         return 2; // finished
++    // MT=OFF: a task with m_imp != null but m_value == null is an
++    // unresolved promise. Report as "running" — caller may need to wait
++    // for an external resolve (we can't actually run it for them here).
++    if (!g_task_manager) return 1;
+     return g_task_manager->get_task_state(o);
+ }
+ 
+ extern "C" LEAN_EXPORT b_obj_res lean_io_wait_any_core(b_obj_arg task_list) {
++    if (!g_task_manager) {
++        // MT=OFF: scan once for any already-finished task. With eager
++        // task spawn, every task is finished at this point.
++        object * it = task_list;
++        while (!is_scalar(it)) {
++            object * head = lean_ctor_get(it, 0);
++            if (lean_to_task(head)->m_value) return head;
++            it = cnstr_get(it, 1);
++        }
++        // No finished task and no manager to wait on: this means the
++        // caller is waiting on a promise that nothing will resolve.
++        // Panic loudly rather than block forever.
++        lean_panic("lean_io_wait_any: no task_manager and no resolved task (MT=OFF promise stuck)");
++        return task_list; // unreachable
++    }
+     return g_task_manager->wait_any(task_list);
+ }
+ 
+ obj_res lean_promise_new() {
+-    lean_always_assert(g_task_manager);
+-
++    // Upstream asserts g_task_manager non-null. With LEAN_MULTI_THREAD=OFF
++    // the new elaborator still creates promises (e.g. SnapshotTask.ofIO),
++    // and we need them to work synchronously. Drop the assert; resolve
++    // resolves the underlying task token directly (see below).
+     bool keep_alive = false;
+     unsigned prio = 0;
+     object * closure = nullptr;
+@@ -1226,8 +1257,24 @@ obj_res lean_promise_new() {
+     return (lean_object *) o;
+ }
+ 
++// MT=OFF synchronous fallback: no task manager, no dependents queued (since
++// all spawns are eager via lean_task_pure). Set the value on the underlying
++// task token directly and free the imp.
++static void lean_promise_resolve_sync(lean_task_object * t, object * v) {
++    lean_assert(t->m_value == nullptr);
++    mark_mt(v);
++    t->m_value = v;
++    lean_task_imp * imp = t->m_imp;
++    t->m_imp = nullptr;
++    if (imp) free_task_imp(imp);
++}
++
+ void lean_promise_resolve(obj_arg value, b_obj_arg promise) {
+-    g_task_manager->resolve(lean_to_promise(promise)->m_result, mk_option_some(value));
++    if (g_task_manager) {
++        g_task_manager->resolve(lean_to_promise(promise)->m_result, mk_option_some(value));
++    } else {
++        lean_promise_resolve_sync(lean_to_promise(promise)->m_result, mk_option_some(value));
++    }
+ }
+ 
+ extern "C" LEAN_EXPORT obj_res lean_io_promise_new() {
+@@ -1247,7 +1294,12 @@ extern "C" LEAN_EXPORT obj_res lean_io_promise_result_opt(b_obj_arg promise) {
+ }
+ 
+ void deactivate_promise(lean_promise_object * promise) {
+-    g_task_manager->resolve(promise->m_result, mk_option_none());
++    if (g_task_manager) {
++        g_task_manager->resolve(promise->m_result, mk_option_none());
++    } else if (promise->m_result->m_value == nullptr) {
++        // MT=OFF: resolve the unfulfilled promise to None synchronously.
++        lean_promise_resolve_sync(promise->m_result, mk_option_none());
++    }
+     lean_dec_ref((lean_object *)promise->m_result);
+     lean_free_small_object((lean_object *)promise);
+ }
+diff --git a/src/runtime/thread.h b/src/runtime/thread.h
+index 1baa4b25..001dd2d4 100644
+--- a/src/runtime/thread.h
++++ b/src/runtime/thread.h
+@@ -181,9 +181,16 @@ public:
+ template<typename T> class unique_lock {
+ public:
+     unique_lock(T const &) {}
++    // adopt_lock_t overload, used by mutex.cpp's lean_io_condvar_wait. With
++    // MT=OFF the mutex never actually held a lock, so adopt is a no-op.
++    unique_lock(T const &, std::adopt_lock_t) {}
+     ~unique_lock() {}
+     void lock() {}
+     void unlock() {}
++    // release(): part of std::unique_lock API; mutex.cpp calls it to
++    // disassociate without unlocking. With MT=OFF nothing is locked, so
++    // returning a null mutex pointer is fine — the caller doesn't use it.
++    T * release() { return nullptr; }
+ };
+ inline unsigned hardware_concurrency() { return 1; }
+ }
+diff --git a/src/runtime/uv/dns.cpp b/src/runtime/uv/dns.cpp
+index 6c228e10..c322f17f 100644
+--- a/src/runtime/uv/dns.cpp
++++ b/src/runtime/uv/dns.cpp
+@@ -173,7 +173,7 @@ extern "C" LEAN_EXPORT lean_obj_res lean_uv_dns_get_name(b_obj_arg addr) {
+ #else
+ 
+ // Std.Internal.IO.Async.DNS.getAddrInfo (host service : @& String) (family : UInt8) : IO (IO.Promise (Except IO.Error (Array IPAddr)))
+-extern "C" LEAN_EXPORT lean_obj_res lean_uv_dns_get_info(b_obj_arg name, b_obj_arg service, uint8_t family, int8_t protocol) {
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_dns_get_info(b_obj_arg name, b_obj_arg service, uint8_t family) {
+     lean_always_assert(
+         false && ("Please build a version of Lean4 with libuv to invoke this.")
+     );
+diff --git a/src/runtime/uv/event_loop.cpp b/src/runtime/uv/event_loop.cpp
+index fa854393..cf73ed45 100644
+--- a/src/runtime/uv/event_loop.cpp
++++ b/src/runtime/uv/event_loop.cpp
+@@ -146,8 +146,8 @@ extern "C" LEAN_EXPORT lean_obj_res lean_uv_event_loop_configure(b_obj_arg optio
+ }
+ 
+ /* Std.Internal.UV.Loop.alive : BaseIO UInt64 */
+-extern "C" LEAN_EXPORT lean_obj_res lean_uv_event_loop_alive() {
+-    return io_result_mk_error("lean_uv_event_loop_alive is not supported");
++extern "C" LEAN_EXPORT uint8_t lean_uv_event_loop_alive() {
++    return 0;
+ }
+ 
+ #endif
+diff --git a/src/runtime/uv/system.cpp b/src/runtime/uv/system.cpp
+index c5f6302c..8ac46f7b 100644
+--- a/src/runtime/uv/system.cpp
++++ b/src/runtime/uv/system.cpp
+@@ -628,7 +628,7 @@ extern "C" LEAN_EXPORT lean_obj_res lean_uv_os_get_passwd() {
+ }
+ 
+ // Std.Internal.UV.System.osGetGroup : IO (Option GroupInfo)
+-extern "C" LEAN_EXPORT lean_obj_res lean_uv_os_get_group() {
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_os_get_group(uint64_t gid) {
+     lean_always_assert(
+         false && ("Please build a version of Lean4 with libuv to invoke this.")
+     );
+diff --git a/src/runtime/uv/tcp.cpp b/src/runtime/uv/tcp.cpp
+index bdc83148..6e581479 100644
+--- a/src/runtime/uv/tcp.cpp
++++ b/src/runtime/uv/tcp.cpp
+@@ -795,5 +795,28 @@ extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_keepalive(b_obj_arg socket, int3
+     );
+ }
+ 
++// Stubs for the rest of the TCP API that the Std libuv-async code references
++// but that the Emscripten branch in v4.27 forgot to define. Without these
++// the wasm-ld link emits `unreachable` for each, and Lean traps the moment
++// any caller goes near this code path.
++
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_wait_readable(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_cancel_recv(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_try_accept(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
+ #endif
+ }
+diff --git a/src/runtime/uv/udp.cpp b/src/runtime/uv/udp.cpp
+index 5675bde4..475a5a5a 100644
+--- a/src/runtime/uv/udp.cpp
++++ b/src/runtime/uv/udp.cpp
+@@ -622,5 +622,20 @@ extern "C" LEAN_EXPORT lean_obj_res lean_uv_udp_set_ttl(b_obj_arg socket, uint32
+     );
+ }
+ 
++// Stubs for the Std libuv-async UDP API the Emscripten branch in v4.27 forgot
++// to define. Without these the wasm-ld link emits `unreachable` for each.
++
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_udp_wait_readable(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_udp_cancel_recv(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
+ #endif
+ }
+-- 
+2.39.2 (Apple Git-143)
+
