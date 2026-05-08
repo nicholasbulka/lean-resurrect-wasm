@@ -165,27 +165,52 @@
         {
           "name": "importGraph",
           "url": "https://github.com/leanprover-community/import-graph",
-          "rev": "8f497d55985a189cea8020d9dc51260af1e41ad2"
+          "rev": "8f497d55985a189cea8020d9dc51260af1e41ad2",
+          "compileRoot": "ImportGraph"
         },
         {
           "name": "proofwidgets",
           "url": "https://github.com/leanprover-community/ProofWidgets4",
-          "rev": "c04225ee7c0585effbd933662b3151f01b600e40"
+          "rev": "c04225ee7c0585effbd933662b3151f01b600e40",
+          "compileRoot": "ProofWidgets"
         },
         {
           "name": "plausible",
           "url": "https://github.com/leanprover-community/plausible",
-          "rev": "009dc1e6f2feb2c96c081537d80a0905b2c6498f"
+          "rev": "009dc1e6f2feb2c96c081537d80a0905b2c6498f",
+          "compileRoot": "Plausible"
         },
         {
           "name": "LeanArchitect",
           "url": "https://github.com/hanwenzhu/LeanArchitect.git",
-          "rev": "d7da3d7c0b38a32d107210e1c2e18283f0e66498"
-        },
+          "rev": "d7da3d7c0b38a32d107210e1c2e18283f0e66498",
+          "compileRoot": "Architect"
+        }
+      ],
+      "_dropped": "checkdecls is a CLI tool (single Main.lean), not a library Mathlib imports from. Skipped here; if Mathlib actually needs checkdecls.* modules at elaboration time, add it back with the right compileRoot."
+    },
+    "mathlib-only-v4.27.0-2026-04": {
+      "description": "Mathlib itself, given that every transitive dep has already been wasm32-built and is pre-staged into OUT_DIR. Multi-day build (7517 .lean files). Resume-mode means progress across restarts is fine.",
+      "topLevel": "Mathlib",
+      "cdnSlug": "mathlib-only-v4.27.0-2026-04",
+      "dependsOn": [
+        "batteries-v4.27.0-2026-04",
+        "Qq-v4.27.0-2026-04",
+        "cli-only",
+        "LeanSearchClient-v4.27.0-2026-04",
+        "aesop-v4.27.0-2026-04",
+        "importGraph-v4.27.0-2026-04",
+        "proofwidgets-v4.27.0-2026-04",
+        "plausible-v4.27.0-2026-04",
+        "LeanArchitect-v4.27.0-2026-04"
+      ],
+      "deps": [
         {
-          "name": "checkdecls",
-          "url": "https://github.com/PatrickMassot/checkdecls.git",
-          "rev": "3d425859e73fcfbef85b9638c2a91708ef4a22d4"
+          "name": "mathlib",
+          "url": "https://github.com/leanprover-community/mathlib4.git",
+          "rev": "a3a10db0e9d66acbebf76c5e6a135066525ac900",
+          "compileRoot": "Mathlib",
+          "_localCheckout": "/Users/nicholasbulka/mathlib4-ref/a3a10db0e9d66acbebf76c5e6a135066525ac900-wrapped"
         }
       ]
     },
