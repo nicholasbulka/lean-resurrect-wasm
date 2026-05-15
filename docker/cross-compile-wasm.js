@@ -465,6 +465,7 @@ for (const pkg of packagesToBuild) {
     let aborted = false;
     await new Promise((finishPkg) => {
       function pump() {
+        if (totalCount === 0) { finishPkg(); return; }
         if (aborted && inFlight === 0) { finishPkg(); return; }
         while (!aborted && inFlight < CONCURRENCY && ready.length > 0) {
           const mod = ready.shift();

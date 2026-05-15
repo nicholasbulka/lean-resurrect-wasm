@@ -93,7 +93,7 @@ const prefix = `// LEAN_NODEFS_PATCHED
       if (typeof self.__filename === 'undefined') {
         // Make this deep enough that IO.appDir = '/lean/bin', and
         // (IO.appDir).parent = '/lean'. Lean's getBuildDir
-        // (Lean/Util/Path.lean:81) does `(← IO.appDir).parent |>.get!`
+        // (Lean/Util/Path.lean:81) does \`(← IO.appDir).parent |>.get!\`
         // and panics if .parent is none — which happens if __filename
         // is shallow like '/lean' (parent of '/' is none).
         self.__filename = '/lean/bin/lean';
@@ -133,9 +133,13 @@ const prefix = `// LEAN_NODEFS_PATCHED
   var isPthread = !worker_threads.isMainThread &&
     worker_threads.workerData === 'em-pthread';
 
-  // Canonical install dir: try realpath first (macOS /tmp → /private/tmp),
-  // then process env, then fall back to the static path baked at patch-time.
-  var __installDir = ${JSON.stringify(installDir)};
+  // Canonical install dir: prefer env override, then derive from lean.js's
+  // own location (always correct since lean.js lives at <install>/bin/lean.js).
+  // The baked path is a last-resort fallback for unusual loaders that don't
+  // populate __dirname. realpath canonicalises symlinks (e.g. macOS /tmp →
+  // /private/tmp) but is safe inside Docker bind mounts.
+  var __installDir = process.env.LEAN_INSTALL_DIR
+    || (typeof __dirname !== 'undefined' ? path.resolve(__dirname, '..') : ${JSON.stringify(installDir)});
   try { __installDir = fs.realpathSync(__installDir); } catch (_) {}
 
   var existing = (typeof globalThis.Module !== 'undefined')
@@ -240,10 +244,12 @@ const prefix = `// LEAN_NODEFS_PATCHED
 `;
 
 // Strip Lean's CLI-driver EM_ASM (throws if process.release.name !== 'node',
-// then chdirs to the host cwd). We invoke callMain ourselves.
+// then chdirs to the host cwd). We invoke callMain ourselves. Match is
+// whitespace-tolerant so it works on both minified and pretty-printed
+// lean.js (Emscripten changed default formatting at some point).
 let patched = src.replace(
-  /(\d+):\(\)=>\{if\(typeof process==="undefined"\|\|process\.release\.name!=="node"\)\{throw new Error\("The Lean command-line driver[\s\S]*?FS\.chdir\(process\.cwd\(\)\)\}/,
-  '$1:()=>{}'
+  /(\d+):\s*\(\)\s*=>\s*\{\s*if\s*\(\s*\(?\s*typeof process[\s\S]*?The Lean command-line driver[\s\S]*?FS\.chdir\(process\.cwd\(\)\)\s*;?\s*\}/,
+  '$1: () => {}'
 );
 
 if (patched === src) {
@@ -252,8 +258,8 @@ if (patched === src) {
 
 // Expose callMain on Module so harnesses can call it with args after init.
 patched = patched.replace(
-  'function callMain(args=[]){',
-  'Module["callMain"]=callMain;function callMain(args=[]){'
+  /function callMain\(args\s*=\s*\[\]\)\s*\{/,
+  'Module["callMain"]=callMain;$&'
 );
 
 // Expose the closure-scoped `var ENV={}` as Module.ENV so harnesses (and
@@ -261,8 +267,8 @@ patched = patched.replace(
 // Without this, `Module.ENV.LEAN_PATH = ...` writes to a different object
 // and Lean's getenv() never sees it.
 patched = patched.replace(
-  'var ENV={};',
-  'var ENV={};Module["ENV"]=ENV;'
+  /var ENV\s*=\s*\{\};/,
+  '$&Module["ENV"]=ENV;'
 );
 
 fs.writeFileSync(leanJsPath, prefix + patched);

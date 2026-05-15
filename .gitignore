@@ -78,3 +78,11 @@ Thumbs.db
 
 # wasm-deps build scratch (clones + intermediate artifacts)
 .build-cache/
+
+# ---- Docker-build per-run trace artifacts ----
+# build-logs/<buildId>/ holds reproducibility traces (deps.jsonl,
+# events.jsonl, validation-report.json) emitted by docker/build-wasm-deps-
+# entry.sh. The *.log files are already covered above; ignore the JSON
+# trace files too — they're per-run, not source-of-truth.
+cdn/projects/*/build-logs/*/*.jsonl
+cdn/projects/*/build-logs/*/validation-report.json
