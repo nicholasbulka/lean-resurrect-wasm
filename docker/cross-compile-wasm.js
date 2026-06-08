@@ -383,12 +383,29 @@ for (const pkg of packagesToBuild) {
 
       const extraMounts = [OUT_DIR, ...cumulativeLeanPathDirs].filter(Boolean).join(':');
       const t0 = Date.now();
+      // wasm32's slower elaborator runtime stretches normal proof
+      // elaboration past Lean's default 200K heartbeat budget, causing
+      // tactics like simp_rw to abort mid-flight and leave partial goal
+      // state that the next tactic blames. Bump globally; cheap for fast
+      // modules. See NOTES.md / feedback_wasm_elaboration_heartbeats.
+      const maxHeartbeats = process.env.LEAN_MAX_HEARTBEATS || '800000';
+      const maxSynthPendingDepth = process.env.LEAN_MAX_SYNTH_PENDING_DEPTH || '8';
+      // synthInstance.maxHeartbeats is a separate budget (default 20000).
+      // wasm's slower typeclass search can blow it on instance searches
+      // that fail-fast natively, turning an expected synth failure into a
+      // hard (deterministic) timeout error. Seen on
+      // Mathlib.NumberTheory.ModularForms.NormTrace. Scale 4× like
+      // maxHeartbeats.
+      const maxSynthHeartbeats = process.env.LEAN_SYNTH_MAX_HEARTBEATS || '80000';
       const child = spawn(
         'node',
         ['--stack-size=8192', '--max-old-space-size=10240',
          path.join(PREFLIGHT, 'trace_fs.js'),
          '-M', '8192',
          '-s', '8192',
+         '-D', `maxHeartbeats=${maxHeartbeats}`,
+         '-D', `maxSynthPendingDepth=${maxSynthPendingDepth}`,
+         '-D', `synthInstance.maxHeartbeats=${maxSynthHeartbeats}`,
          '-o', oleanOut, '-i', ileanOut, '-R', srcRoot, srcFile],
         {
           cwd: srcRoot,
