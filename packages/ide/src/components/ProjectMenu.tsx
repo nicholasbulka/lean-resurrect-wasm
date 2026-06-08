@@ -128,23 +128,39 @@ export function ProjectMenu() {
       for (const s of slugs) {
         if (!projects.find((p) => p.id === s)) { alert('No such project on CDN: ' + s); return; }
       }
-      // Fetch primary sources + every bundle in parallel.
-      const [srcR, ...bundleResps] = await Promise.all([
-        fetch(`/cdn/projects/${encodeURIComponent(primary.id)}/sources.json`),
-        ...slugs.map((s) => fetch(`/cdn/projects/${encodeURIComponent(s)}/oleans.bundle`)),
-      ]);
+      // Fetch primary sources + every slug's oleans (sharded or single).
+      const srcR = await fetch(`/cdn/projects/${encodeURIComponent(primary.id)}/sources.json`);
       if (!srcR.ok) { alert('CDN sources fetch failed: ' + srcR.status); return; }
-      for (let i = 0; i < bundleResps.length; i++) {
-        if (!bundleResps[i].ok) {
-          alert(`CDN oleans fetch failed for ${slugs[i]}: ${bundleResps[i].status}`);
-          return;
+      const manifest = await srcR.json() as { name: string; files: { path: string; content: string }[] };
+
+      // A slug ships its oleans either as a single oleans.bundle or, for
+      // large libraries (Mathlib is ~4 GB), as ~500 MB shards described by
+      // oleans.bundle.manifest.json. Each shard is a standalone bundle, so
+      // we collect them all into one flat array the worker stages in turn.
+      const bundleBytes: Uint8Array[] = [];
+      for (const s of slugs) {
+        const base = `/cdn/projects/${encodeURIComponent(s)}`;
+        const mR = await fetch(`${base}/oleans.bundle.manifest.json`);
+        if (mR.ok) {
+          const shardManifest = await mR.json() as { shards: { name: string }[] };
+          const shardResps = await Promise.all(
+            shardManifest.shards.map((sh) => fetch(`${base}/${encodeURIComponent(sh.name)}`)),
+          );
+          for (let i = 0; i < shardResps.length; i++) {
+            if (!shardResps[i].ok) {
+              alert(`CDN shard fetch failed for ${s}/${shardManifest.shards[i].name}: ${shardResps[i].status}`);
+              return;
+            }
+          }
+          const bufs = await Promise.all(shardResps.map((r) => r.arrayBuffer()));
+          for (const b of bufs) { const u = new Uint8Array(b); if (u.byteLength > 4) bundleBytes.push(u); }
+        } else {
+          const bR = await fetch(`${base}/oleans.bundle`);
+          if (!bR.ok) { alert(`CDN oleans fetch failed for ${s}: ${bR.status}`); return; }
+          const u = new Uint8Array(await bR.arrayBuffer());
+          if (u.byteLength > 4) bundleBytes.push(u);
         }
       }
-      const manifest = await srcR.json() as { name: string; files: { path: string; content: string }[] };
-      const bundleBuffers = await Promise.all(bundleResps.map((r) => r.arrayBuffer()));
-      const bundleBytes = bundleBuffers
-        .map((b) => new Uint8Array(b))
-        .filter((b) => b.byteLength > 4);
       dispatch(importProject({
         name: slugs.length > 1 ? `${manifest.name} (+${slugs.length - 1})` : manifest.name,
         root: 'cdn://' + slugs.join('+'),

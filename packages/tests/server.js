@@ -441,14 +441,23 @@ function handleCdnProjectList(req, res) {
       if (!fs.existsSync(srcPath)) continue;
       let manifest;
       try { manifest = JSON.parse(fs.readFileSync(srcPath, 'utf8')); } catch (_) { continue; }
-      const oleansPath = path.join(projDir, 'oleans.bundle');
-      let oleansBundleBytes = 0;
-      try { oleansBundleBytes = fs.statSync(oleansPath).size; } catch (_) {}
+      // Oleans ship either as a single oleans.bundle or, for large libs,
+      // as ~500 MB shards described by oleans.bundle.manifest.json. Report
+      // total bytes either way; flag sharded so the UI can hint at size.
+      let oleansBundleBytes = 0, sharded = false;
+      try { oleansBundleBytes = fs.statSync(path.join(projDir, 'oleans.bundle')).size; } catch (_) {}
+      if (!oleansBundleBytes) {
+        try {
+          const sm = JSON.parse(fs.readFileSync(path.join(projDir, 'oleans.bundle.manifest.json'), 'utf8'));
+          if (Array.isArray(sm.shards)) { oleansBundleBytes = sm.totalBundleBytes || 0; sharded = true; }
+        } catch (_) {}
+      }
       entries.push({
         id: slug,
         name: manifest.name || slug,
         sourceCount: Array.isArray(manifest.files) ? manifest.files.length : 0,
         oleansBundleBytes,
+        sharded,
       });
     }
   } catch (_) { /* CDN dir missing; serve empty list */ }

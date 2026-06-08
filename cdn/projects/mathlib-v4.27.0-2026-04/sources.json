@@ -1,0 +1,9 @@
+{
+  "name": "mathlib-v4.27.0-2026-04",
+  "files": [
+    {
+      "path": "Main.lean",
+      "content": "-- Smoke test for the wasm32-built Mathlib bundle.\n-- This is the full library: 7,515 / 7,516 modules cross-compiled to\n-- wasm32 (only the root `Mathlib` umbrella module is omitted — importing\n-- everything at once exceeds the 4 GB wasm32 address space). The oleans\n-- ship as ~500 MB shards (oleans.bundle.NNN + oleans.bundle.manifest.json)\n-- rather than one file, so each shard stays under Cloudflare's 512 MB\n-- free-tier cache cap.\n--\n-- NOTE: staging all ~4 GB of oleans into a single wasm32 MEMFS instance\n-- hits the same 4 GB ceiling. In practice import the specific submodules\n-- your file needs, not the whole library.\n\nimport Mathlib.Data.Real.Basic\nimport Mathlib.Algebra.Group.Defs\n\n#check @Real.instField\n#check @Monoid\n"
+    }
+  ]
+}

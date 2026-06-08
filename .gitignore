@@ -94,7 +94,9 @@ cdn/projects/*/build/
 
 # ---- Oversized bundles ----
 # Most oleans.bundle files are small enough to track in git, but full
-# Mathlib is ~3.9 GB — past GitHub's 2 GB/file limit. Distribute it
-# out-of-band (see docker/README-build-wasm-deps.md). Small bundles are
-# re-included by the negation below.
+# Mathlib is ~4.2 GB — past GitHub's 2 GB/file limit. It's sharded into
+# ~500 MB pieces (oleans.bundle.NNN) for out-of-band hosting behind a CDN.
+# Ignore the monolith and every shard; the tiny manifest.json stays tracked
+# as the source-of-truth record (shard list + sha256s + counts).
 cdn/projects/mathlib-v4.27.0-2026-04/oleans.bundle
+cdn/projects/mathlib-v4.27.0-2026-04/oleans.bundle.[0-9]*

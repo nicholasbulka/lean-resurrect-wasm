@@ -1,0 +1,63 @@
+{
+  "format": "sharded-oleans-bundle/1",
+  "shardCap": 500000000,
+  "totalFiles": 39529,
+  "totalRawBytes": 4224345168,
+  "totalBundleBytes": 4226421941,
+  "shards": [
+    {
+      "name": "oleans.bundle.000",
+      "bytes": 498757047,
+      "sha256": "adf04d4dfa2826b61579e007ceb29187678dca3c65e45f83d7e89a3415710126",
+      "count": 5227
+    },
+    {
+      "name": "oleans.bundle.001",
+      "bytes": 499958890,
+      "sha256": "ff19553340ea45624166b5f0a9bf965d7bb97a7da60867df0e54cc8517ce9168",
+      "count": 4849
+    },
+    {
+      "name": "oleans.bundle.002",
+      "bytes": 499968100,
+      "sha256": "e7aae272b6e4d1822539adbddd7a0d931da97a0b7dbfbfbc61cd9ad65856186a",
+      "count": 4636
+    },
+    {
+      "name": "oleans.bundle.003",
+      "bytes": 499962335,
+      "sha256": "b379ca8352984c7b6dd2e96f2146973557c5703a5bd49158c5b0dcb69d7fcb9c",
+      "count": 4925
+    },
+    {
+      "name": "oleans.bundle.004",
+      "bytes": 499776716,
+      "sha256": "fd8805f1fff71d146a17bb88fabc495be3c05bc429fee72359d4dd7ffb834c64",
+      "count": 5055
+    },
+    {
+      "name": "oleans.bundle.005",
+      "bytes": 499595442,
+      "sha256": "4c319ef5f8fba8fa5b335a49f27b78ed4d1e9792b0257707e207b8a018586ae7",
+      "count": 4270
+    },
+    {
+      "name": "oleans.bundle.006",
+      "bytes": 499991099,
+      "sha256": "9b76967c6c254ea0bfacea959f290663984eacf666a4658267b326e7202346f5",
+      "count": 4559
+    },
+    {
+      "name": "oleans.bundle.007",
+      "bytes": 499890264,
+      "sha256": "35d1f45f39bd0abdb1d3574a02e7838648f9313c27890fca64a901eaac41aa93",
+      "count": 3451
+    },
+    {
+      "name": "oleans.bundle.008",
+      "bytes": 228522048,
+      "sha256": "d656c3bedd6f24ab42aa4517d93529509d3148303d0dbb25216144853ce931a8",
+      "count": 2557
+    }
+  ]
+}
