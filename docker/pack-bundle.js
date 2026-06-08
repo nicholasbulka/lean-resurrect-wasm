@@ -36,18 +36,20 @@ function walk(dir, rel) {
 walk(root, '');
 entries.sort((a, b) => a.rel.localeCompare(b.rel));
 
-const parts = [];
+// Stream entry-by-entry: Buffer.concat + one writeFileSync caps out at
+// 2 GiB (ERR_OUT_OF_RANGE), and full Mathlib is ~4.2 GB. Each per-file
+// writeSync stays well under the limit; the wire format is unchanged.
+const fd = fs.openSync(outFile, 'w');
 const cb = Buffer.alloc(4); cb.writeUInt32LE(entries.length, 0);
-parts.push(cb);
-let totalRaw = 0;
+fs.writeSync(fd, cb);
+let totalRaw = 0, totalBundle = cb.length;
 for (const e of entries) {
   const data = fs.readFileSync(e.full);
   totalRaw += data.length;
   const pb = Buffer.from(e.rel, 'utf8');
   const pl = Buffer.alloc(2); pl.writeUInt16LE(pb.length, 0);
   const dl = Buffer.alloc(4); dl.writeUInt32LE(data.length, 0);
-  parts.push(pl, pb, dl, data);
+  for (const part of [pl, pb, dl, data]) { fs.writeSync(fd, part); totalBundle += part.length; }
 }
-const all = Buffer.concat(parts);
-fs.writeFileSync(outFile, all);
-console.log(`[pack-bundle] ${entries.length} files, ${totalRaw} raw bytes -> ${all.length} bundle bytes -> ${outFile}`);
+fs.closeSync(fd);
+console.log(`[pack-bundle] ${entries.length} files, ${totalRaw} raw bytes -> ${totalBundle} bundle bytes -> ${outFile}`);

@@ -86,3 +86,15 @@ Thumbs.db
 # trace files too — they're per-run, not source-of-truth.
 cdn/projects/*/build-logs/*/*.jsonl
 cdn/projects/*/build-logs/*/validation-report.json
+
+# ---- Cross-compile scratch ----
+# build/ holds the loose .olean tree the orchestrator writes; it's the
+# source for pack-bundle.js but is multi-GB scratch, never committed.
+cdn/projects/*/build/
+
+# ---- Oversized bundles ----
+# Most oleans.bundle files are small enough to track in git, but full
+# Mathlib is ~3.9 GB — past GitHub's 2 GB/file limit. Distribute it
+# out-of-band (see docker/README-build-wasm-deps.md). Small bundles are
+# re-included by the negation below.
+cdn/projects/mathlib-v4.27.0-2026-04/oleans.bundle
