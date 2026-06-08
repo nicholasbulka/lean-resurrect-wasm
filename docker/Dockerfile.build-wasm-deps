@@ -43,8 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
  && rm -rf /var/lib/apt/lists/*
 
-# Node 20 (matches the host's tooling era; needed to run preflight/trace_fs.js).
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# Node 24 (V8 13.x). Node 20's V8 11.x rejects lean.wasm with "exports count
+# 200637 exceeds internal limit of 100000" — that kV8MaxWasmExports limit
+# was relaxed in V8 12+. The host's v24.14.1 loads the same lean.wasm cleanly.
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 

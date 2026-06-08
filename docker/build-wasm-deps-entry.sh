@@ -23,6 +23,8 @@
 set -euo pipefail
 shopt -s lastpipe
 
+git config --global --add safe.directory '*'
+
 if [ -z "${LIBRARY_KEY:-}" ]; then
   echo "[build-wasm-deps] LIBRARY_KEY not set" >&2
   exit 2

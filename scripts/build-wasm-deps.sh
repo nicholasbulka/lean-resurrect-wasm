@@ -69,5 +69,5 @@ docker run --rm \
   -v "$ROOT/preflight:/preflight:ro" \
   -v "$ROOT/vendor/lean-linux_wasm32:/wasm-lean" \
   -e LIBRARY_KEY="$LIB_KEY" \
-  "${ENV_FLAGS[@]}" \
+  ${ENV_FLAGS[@]+"${ENV_FLAGS[@]}"} \
   "$IMAGE"
