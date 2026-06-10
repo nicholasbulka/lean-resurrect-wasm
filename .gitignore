@@ -100,3 +100,8 @@ cdn/projects/*/build/
 # as the source-of-truth record (shard list + sha256s + counts).
 cdn/projects/mathlib-v4.27.0-2026-04/oleans.bundle
 cdn/projects/mathlib-v4.27.0-2026-04/oleans.bundle.[0-9]*
+# Same for the core base-layer bundle (closure of Mathlib.Init, ~780 MB):
+# ignore the monolith and every shard; core.bundle.manifest.json and the
+# tiny core-modules.json stay tracked as the source-of-truth records.
+cdn/projects/mathlib-v4.27.0-2026-04/core.bundle
+cdn/projects/mathlib-v4.27.0-2026-04/core.bundle.[0-9]*

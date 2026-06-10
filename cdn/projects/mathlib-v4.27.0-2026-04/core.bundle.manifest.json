@@ -1,0 +1,21 @@
+{
+  "format": "sharded-oleans-bundle/1",
+  "shardCap": 500000000,
+  "totalFiles": 7555,
+  "totalRawBytes": 781873229,
+  "totalBundleBytes": 782203514,
+  "shards": [
+    {
+      "name": "core.bundle.000",
+      "bytes": 499967643,
+      "sha256": "b56d283f9cf54d8c2ea65a064f867479e123116c790e1b7eee6376fe4df42ea1",
+      "count": 5560
+    },
+    {
+      "name": "core.bundle.001",
+      "bytes": 282235871,
+      "sha256": "b7df8740d0da2929b2f35ecf004de518beabc4e75d8738a7b6abe044a1a86749",
+      "count": 1995
+    }
+  ]
+}
