@@ -4,7 +4,8 @@ import { keymap } from '@codemirror/view';
 import type { EditorView } from '@codemirror/view';
 import { useAppDispatch, useAppSelector } from '../store';
 import { updateFileContent, getProjectOleansBundles } from '../slices/projectsSlice';
-import { compileSource, cancelCurrentCompile } from '../slices/compileSlice';
+import { compileSource, cancelCurrentCompile, setProgress } from '../slices/compileSlice';
+import { fetchDeltaBundle } from '../lib/cdnLoader';
 import { LibraryPaths } from './LibraryPaths';
 import { createCm6Bridge } from '../lib/editorBridge';
 import { CodeMirror } from '../lib/cm/CodeMirror';
@@ -32,7 +33,26 @@ export function EditorPane() {
 
   async function runCompile() {
     if (!project || !file || status === 'running') return;
-    const bundles = getProjectOleansBundles(project.id);
+    const bundles = [...getProjectOleansBundles(project.id)];
+    // Closure-prefetch (browser mode only): for projects that ship an import
+    // graph + core base layer, fetch only the modules this file transitively
+    // needs beyond the staged core and stage them alongside it. Returns null
+    // for non-prefetch projects (their full bundle is already in `bundles`)
+    // or when the core already covers the file.
+    if (compileMode === 'browser') {
+      try {
+        const delta = await fetchDeltaBundle(
+          project.id,
+          file.content,
+          (p) => dispatch(setProgress(p)),
+        );
+        if (delta) bundles.push(delta);
+      } catch (e) {
+        // Non-fatal: fall through to compile with whatever is staged; Lean
+        // will report any unresolved imports.
+        console.warn('[ide] delta prefetch failed:', e);
+      }
+    }
     await dispatch(compileSource({
       source: file.content,
       libraryPaths: project.libraryPaths,

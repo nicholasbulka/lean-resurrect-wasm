@@ -5,9 +5,40 @@ import {
   setProjectOleansBundle, setProjectOleansBundles,
 } from '../slices/projectsSlice';
 import { setView, setCompileMode, type CompileMode } from '../slices/uiSlice';
+import { setProjectCdnMeta } from '../lib/cdnLoader';
+import { transitiveClosure } from '../lib/closure';
 
 const DEFAULT_LICRITERION_PATH =
   '/Users/nicholasbulka/prog/lean/liCriterionLean4Web/services/lean4web/Projects/LiCriterion';
+
+// Fetch a manifest-described sharded bundle (or a single bundle) as an array
+// of standalone bundle byte-blobs. Same wire format/shape for both the project
+// `oleans.bundle*` and the `core.bundle*` (closure-prefetch base layer).
+// Returns [] if neither the manifest nor the single bundle exists.
+async function fetchShardedBundle(base: string, prefix: string): Promise<Uint8Array[]> {
+  const out: Uint8Array[] = [];
+  const mR = await fetch(`${base}/${prefix}.manifest.json`);
+  if (mR.ok) {
+    const shardManifest = await mR.json() as { shards: { name: string }[] };
+    const shardResps = await Promise.all(
+      shardManifest.shards.map((sh) => fetch(`${base}/${encodeURIComponent(sh.name)}`)),
+    );
+    for (let i = 0; i < shardResps.length; i++) {
+      if (!shardResps[i].ok) {
+        throw new Error(`shard fetch failed for ${shardManifest.shards[i].name}: ${shardResps[i].status}`);
+      }
+    }
+    const bufs = await Promise.all(shardResps.map((r) => r.arrayBuffer()));
+    for (const b of bufs) { const u = new Uint8Array(b); if (u.byteLength > 4) out.push(u); }
+    return out;
+  }
+  const bR = await fetch(`${base}/${prefix}`);
+  if (bR.ok) {
+    const u = new Uint8Array(await bR.arrayBuffer());
+    if (u.byteLength > 4) out.push(u);
+  }
+  return out;
+}
 
 export function ProjectMenu() {
   const dispatch = useAppDispatch();
@@ -133,43 +164,69 @@ export function ProjectMenu() {
       if (!srcR.ok) { alert('CDN sources fetch failed: ' + srcR.status); return; }
       const manifest = await srcR.json() as { name: string; files: { path: string; content: string }[] };
 
+      // Closure-prefetch: a slug that ships an import-graph.json + core base
+      // layer (core.bundle*) stages ONLY the core up front and fetches each
+      // file's additional transitive deps on demand at compile time. This is
+      // the only way Mathlib (~4 GB of oleans, over the wasm32 MEMFS ceiling)
+      // can be used in-browser. Probe the PRIMARY slug for an import-graph;
+      // if present, take the closure-prefetch path. Otherwise fall back to
+      // staging the whole oleans.bundle*/shards as before (small libs).
+      const primaryBase = `/cdn/projects/${encodeURIComponent(primary.id)}`;
+      const graphR = await fetch(`${primaryBase}/import-graph.json`);
+      const closurePrefetch = graphR.ok;
+
       // A slug ships its oleans either as a single oleans.bundle or, for
-      // large libraries (Mathlib is ~4 GB), as ~500 MB shards described by
-      // oleans.bundle.manifest.json. Each shard is a standalone bundle, so
-      // we collect them all into one flat array the worker stages in turn.
+      // large libraries, as ~500 MB shards described by a manifest. Each shard
+      // is a standalone bundle, so we collect them all into one flat array the
+      // worker stages in turn.
       const bundleBytes: Uint8Array[] = [];
-      for (const s of slugs) {
-        const base = `/cdn/projects/${encodeURIComponent(s)}`;
-        const mR = await fetch(`${base}/oleans.bundle.manifest.json`);
-        if (mR.ok) {
-          const shardManifest = await mR.json() as { shards: { name: string }[] };
-          const shardResps = await Promise.all(
-            shardManifest.shards.map((sh) => fetch(`${base}/${encodeURIComponent(sh.name)}`)),
-          );
-          for (let i = 0; i < shardResps.length; i++) {
-            if (!shardResps[i].ok) {
-              alert(`CDN shard fetch failed for ${s}/${shardManifest.shards[i].name}: ${shardResps[i].status}`);
-              return;
-            }
+      try {
+        for (const s of slugs) {
+          const base = `/cdn/projects/${encodeURIComponent(s)}`;
+          // For the primary slug in closure-prefetch mode, stage core.bundle*
+          // (the always-on base layer) instead of the full oleans.bundle*.
+          const prefix = (closurePrefetch && s === primary.id) ? 'core.bundle' : 'oleans.bundle';
+          const blobs = await fetchShardedBundle(base, prefix);
+          for (const u of blobs) bundleBytes.push(u);
+        }
+      } catch (e: any) {
+        alert('CDN oleans fetch failed: ' + (e?.message ?? String(e)));
+        return;
+      }
+
+      // Parse the closure-prefetch metadata before dispatching the project so
+      // we can stash it under the new project id below.
+      let cdnMeta: { slug: string; graph: Record<string, string[]>; coreModules: Set<string> } | null = null;
+      if (closurePrefetch) {
+        try {
+          const graphDoc = await graphR.json() as { graph: Record<string, string[]> };
+          const graph = graphDoc.graph ?? {};
+          // core-modules.json is the authoritative core set. If the sibling
+          // agent hasn't shipped it yet, fall back to the closure of the
+          // declared coreRoot (Mathlib.Init) so delta computation still works.
+          let coreModules: Set<string>;
+          const coreR = await fetch(`${primaryBase}/core-modules.json`);
+          if (coreR.ok) {
+            const coreDoc = await coreR.json() as { coreRoot?: string; modules: string[] };
+            coreModules = new Set(coreDoc.modules ?? []);
+          } else {
+            coreModules = transitiveClosure(['Mathlib.Init'], graph);
           }
-          const bufs = await Promise.all(shardResps.map((r) => r.arrayBuffer()));
-          for (const b of bufs) { const u = new Uint8Array(b); if (u.byteLength > 4) bundleBytes.push(u); }
-        } else {
-          const bR = await fetch(`${base}/oleans.bundle`);
-          if (!bR.ok) { alert(`CDN oleans fetch failed for ${s}: ${bR.status}`); return; }
-          const u = new Uint8Array(await bR.arrayBuffer());
-          if (u.byteLength > 4) bundleBytes.push(u);
+          cdnMeta = { slug: primary.id, graph, coreModules };
+        } catch (_) {
+          // Graph/core parse failure → behave like a non-prefetch project.
+          cdnMeta = null;
         }
       }
+
       dispatch(importProject({
         name: slugs.length > 1 ? `${manifest.name} (+${slugs.length - 1})` : manifest.name,
         root: 'cdn://' + slugs.join('+'),
         files: manifest.files,
       }));
-      if (bundleBytes.length) {
-        const id = (window as any).__store?.getState()?.projects?.currentId;
-        if (id) setProjectOleansBundles(id, bundleBytes);
-      }
+      const id = (window as any).__store?.getState()?.projects?.currentId;
+      if (id && bundleBytes.length) setProjectOleansBundles(id, bundleBytes);
+      if (id) setProjectCdnMeta(id, cdnMeta);
     } catch (e: any) {
       alert('CDN import error: ' + (e?.message ?? String(e)));
     } finally {
