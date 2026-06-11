@@ -104,11 +104,12 @@ const prefix = `// LEAN_NODEFS_PATCHED
       Module.noInitialRun = true;
       // Set LEAN_PATH / LEAN_SYSROOT on the pthread's Module.ENV so Lean's
       // env reads (which can panic on Option.get!) succeed. The outer
-      // leanWorker stages oleans at /lib/lean and FS calls from pthreads
-      // are proxied back to main thread, so these paths are readable.
+      // leanWorker stages oleans at /lean/lib/lean (the install prefix this
+      // build searches; LEAN_PATH itself is ignored under PROXY_TO_PTHREAD)
+      // and FS calls from pthreads are proxied to the main thread.
       Module.ENV = Module.ENV || {};
-      if (!Module.ENV.LEAN_PATH) Module.ENV.LEAN_PATH = '/work/lib/lean:/lib/lean';
-      if (!Module.ENV.LEAN_SYSROOT) Module.ENV.LEAN_SYSROOT = '/';
+      if (!Module.ENV.LEAN_PATH) Module.ENV.LEAN_PATH = '/lean/lib/lean';
+      if (!Module.ENV.LEAN_SYSROOT) Module.ENV.LEAN_SYSROOT = '/lean';
       if (!Module.ENV.HOME) Module.ENV.HOME = '/home/user';
       if (!Module.ENV.USER) Module.ENV.USER = 'user';
       // Pthread workers' default print/printErr goes to the worker's own

@@ -108,40 +108,37 @@ function __leanSetupModule(leanJsBaseUrl, leanJsUrl, oleanBytes) {
           if (type === NODEFS) return origMount(MEMFS, {}, mountpoint);
           return origMount(type, opts, mountpoint);
         };
-        // ENV: Lean uses --print-libdir or LEAN_PATH to find stdlib;
-        // there's no real install prefix here, so point LEAN_PATH at
-        // /lib/lean where preRun stages oleans. Assign back onto Module.ENV
-        // (the `|| {}` fallback creates a detached object otherwise).
+        // ENV: in principle Lean reads LEAN_PATH to find oleans, but under
+        // PROXY_TO_PTHREAD the relinked lean.js does NOT honor LEAN_PATH /
+        // LEAN_SYSROOT from the env — the pthread running lean_main computes
+        // its install prefix from __filename (=/lean/bin/lean → /lean) and
+        // ONLY searches <prefix>/lib/lean = /lean/lib/lean. So we stage all
+        // oleans (stdlib + project) THERE, where Lean actually looks. We
+        // still set LEAN_PATH for the code paths that do consult it.
         if (!Module.ENV) Module.ENV = {};
         const ENV = Module.ENV;
         for (const [k, v] of Object.entries(self.process.env || {})) {
           if (v != null) ENV[k] = String(v);
         }
-        // /work/lib/lean is the per-compile project-oleans staging dir;
-        // putting it on the search path means Lean finds project-internal
-        // modules (Lc.*, etc.) before falling back to stdlib in /lib/lean.
-        // Empty staging dir for trivial-source compiles is harmless.
-        ENV.LEAN_PATH = '/work/lib/lean:/lib/lean';
-        ENV.LEAN_SYSROOT = '/';
+        ENV.LEAN_PATH = '/lean/lib/lean';
+        ENV.LEAN_SYSROOT = '/lean';
         // Clear emcc's getEnvStrings cache so subsequent getenv()
         // reads see what we just set (rather than a snapshot from
         // before preRun).
         if (Module.getEnvStrings && Module.getEnvStrings.strings) {
           Module.getEnvStrings.strings = undefined;
         }
-        // Stage oleans.
+        // Stage stdlib oleans at the install-prefix Lean searches.
         for (const { path, bytes } of oleanBytes) {
-          const full = '/lib/lean/' + path;
+          const full = '/lean/lib/lean/' + path;
           try { FS.mkdirTree(full.slice(0, full.lastIndexOf('/'))); } catch (_) {}
           FS.writeFile(full, bytes);
         }
         try { FS.mkdirTree('/work'); } catch (_) {}
-        try { FS.mkdirTree('/work/lib/lean'); } catch (_) {}
         try { FS.mkdirTree('/home/user'); } catch (_) {}
         // Lean's getBuildDir computes `(IO.appDir).parent.get!` from
-        // __filename = /lean/bin/lean, returning /lean. Some downstream
-        // code stats /lean/bin, so create the directory tree even
-        // though we keep the actual oleans at /lib/lean.
+        // __filename = /lean/bin/lean, returning /lean; some downstream
+        // code stats /lean/bin, so create that tree too.
         try { FS.mkdirTree('/lean/bin'); } catch (_) {}
         try { FS.mkdirTree('/lean/lib/lean'); } catch (_) {}
       },
@@ -168,9 +165,18 @@ function __leanAwaitCalledRun() {
       const now = Date.now();
       if (now - lastLog > 2000) {
         const m = self.Module;
+        // Newer Emscripten (post-4GB-relink lean.js) installs abort-on-read
+        // getter traps on deprecated Module props like `wasmBinary` /
+        // `wasmMemory` — touching them throws "has been replaced by ...".
+        // Probe via the descriptor so the diagnostic never trips the trap.
+        const safeType = (obj, key) => {
+          const d = Object.getOwnPropertyDescriptor(obj, key);
+          if (d && typeof d.get === 'function') return 'trapped';
+          return typeof obj[key];
+        };
         console.log('[leanWorker] waiting for calledRun: '
-          + 'wasmBinary=' + (typeof m.wasmBinary)
-          + ' wasmMemory=' + (typeof m.wasmMemory)
+          + 'wasmBinary=' + safeType(m, 'wasmBinary')
+          + ' wasmMemory=' + safeType(m, 'wasmMemory')
           + ' calledRun=' + m.calledRun
           + ' instantiateWasm=' + (typeof m.instantiateWasm)
           + ' onRuntimeInitialized=' + (typeof m.onRuntimeInitialized)
@@ -426,12 +432,13 @@ async function __leanRunCompile(requestId, source, libraryPaths, projectOleansBu
   const enc = new TextEncoder();
 
   // Stage every prebuilt-oleans bundle the IDE shipped into MEMFS at
-  // /work/lib/lean. Bundle wire format: u32 count; per entry u16
-  // pathLen, path bytes, u32 dataLen, data bytes. Multiple bundles
-  // unpack into the same dir; cross-bundle imports resolve naturally
-  // because /work/lib/lean is on LEAN_PATH (set in setupModule preRun
-  // and the patched lean.js prefix).
-  const projectLibRoot = '/work/lib/lean';
+  // /lean/lib/lean — the install prefix the relinked Lean actually
+  // searches under PROXY_TO_PTHREAD (LEAN_PATH is ignored). Project
+  // oleans (core + per-file delta) merge into the same dir as the staged
+  // stdlib, so all imports — stdlib, Mathlib core, and delta — resolve.
+  // Bundle wire format: u32 count; per entry u16 pathLen, path bytes,
+  // u32 dataLen, data bytes.
+  const projectLibRoot = '/lean/lib/lean';
   const bundles = Array.isArray(projectOleansBundles)
     ? projectOleansBundles
     : (projectOleansBundles ? [projectOleansBundles] : []); // back-compat
@@ -489,7 +496,12 @@ async function __leanRunCompile(requestId, source, libraryPaths, projectOleansBu
     // emcc's PThread namespace exists iff the build is MT/PROXY_TO_PTHREAD.
     const isProxyBuild = typeof M.PThread === 'object' && M.PThread !== null;
     const sync = M.callMain(args);
-    const TIMEOUT_MS = 180_000;
+    // Cold in-browser Mathlib compiles load a large olean closure (the
+    // ~1,500-module core) before elaborating, well past the old 3-minute
+    // budget. Allow an override via the compile request; default generous.
+    const TIMEOUT_MS = (typeof self.__leanCompileTimeoutMs === 'number' && self.__leanCompileTimeoutMs > 0)
+      ? self.__leanCompileTimeoutMs
+      : 900_000;
     const timed = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('main never returned (no onExit) after ' + TIMEOUT_MS + 'ms')), TIMEOUT_MS));
     if (isProxyBuild) {
