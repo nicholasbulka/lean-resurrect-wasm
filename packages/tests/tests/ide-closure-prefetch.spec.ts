@@ -87,6 +87,36 @@ test.describe('closure-prefetch: in-browser Mathlib compile under the 4 GB ceili
     expect(data).toEqual(expect.arrayContaining(['42']));
   });
 
+  // Phase 1 (wasmModule cache): a second compile in the same page must
+  // reuse the JIT'd WebAssembly.Module (skip the ~26s re-compile) and the
+  // 1.1 GB-olean cache-fill OOM must be gone.
+  test('wasmModule cache: 2nd compile reuses the JIT\'d module, no OOM', async ({ page }) => {
+    test.setTimeout(12 * 60_000);
+    const logs: string[] = [];
+    page.on('pageerror', (err) => console.log('[browser:pageerror]', err.message));
+    page.on('console', (msg) => { logs.push(msg.text()); });
+    await page.goto('/');
+    await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 30_000 });
+
+    // Compile #1 (cold: JITs wasm, posts cache-fill).
+    const r1 = await compileAndGet(page, '#eval 6 * 7\n');
+    expect(r1?.status).toBe('ok');
+    expect((r1?.diagnostics ?? []).map((d: any) => String(d.data))).toContain('42');
+
+    // Compile #2 with a distinct result so we can detect its completion.
+    await page.evaluate((src) => (window as any).__ideEditor.setValue(src), '#eval 1 + 1\n');
+    await page.getByRole('button', { name: /^compile/i }).first().click();
+    await page.waitForFunction(() => {
+      const s = (window as any).__store?.getState?.()?.compile;
+      return s?.status === 'ok' && (s.result?.diagnostics ?? []).some((d: any) => String(d.data) === '2');
+    }, null, { timeout: 8 * 60_000 });
+
+    // The 2nd worker spawn must have reused the cached module...
+    expect(logs.some((l) => /wasm module: cached/.test(l))).toBe(true);
+    // ...and the cache-fill must never have OOM'd.
+    expect(logs.some((l) => /cache-fill postMessage failed/.test(l))).toBe(false);
+  });
+
   test('core-only file (Real.Basic, delta 0) elaborates from the staged core', async ({ page }) => {
     test.setTimeout(25 * 60_000);
     wireDiagnostics(page);

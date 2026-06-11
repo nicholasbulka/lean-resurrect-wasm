@@ -378,17 +378,23 @@ async function __leanInitRuntime(leanJsUrl, manifestUrl, cache) {
   // Ship loaded state back to the main page so subsequent worker spawns
   // can skip the work. Only post what wasn't already provided by the
   // cache (otherwise we'd double-store on every spawn).
+  //
+  // IMPORTANT: do NOT round-trip the unpacked oleans through the main
+  // thread. For a Mathlib-class stdlib bundle that array is >1 GB, and
+  // structured-cloning it here throws "Data cannot be cloned, out of
+  // memory" — which previously failed the WHOLE cache-fill, so even the
+  // cheap wasmModule never got cached and every respawn re-JIT'd ~26s of
+  // wasm. The compiled WebAssembly.Module clones cheaply (the engine
+  // shares the compiled code), and the olean *bundle* is HTTP-cached, so
+  // a fresh worker just re-fetches + re-unpacks it quickly.
   const cachePayload = { type: 'cache-fill' };
   if (!usedCache.wasmModule && self.__leanCapturedWasmModule) {
     cachePayload.wasmModule = self.__leanCapturedWasmModule;
   }
-  if (!usedCache.oleans) {
-    cachePayload.oleans = oleanBytes;
-  }
   if (!usedCache.leanJsSource) {
     cachePayload.leanJsSource = src;
   }
-  if (cachePayload.wasmModule || cachePayload.oleans || cachePayload.leanJsSource) {
+  if (cachePayload.wasmModule || cachePayload.leanJsSource) {
     try {
       postMessage(cachePayload);
       console.log('[leanWorker] cache-fill posted: ' + Object.keys(cachePayload).filter(k => k !== 'type').join(','));
