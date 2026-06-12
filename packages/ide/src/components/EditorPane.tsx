@@ -33,12 +33,12 @@ export function EditorPane() {
 
   async function runCompile() {
     if (!project || !file || status === 'running') return;
-    const bundles = [...getProjectOleansBundles(project.id)];
-    // Closure-prefetch (browser mode only): for projects that ship an import
-    // graph + core base layer, fetch only the modules this file transitively
-    // needs beyond the staged core and stage them alongside it. Returns null
-    // for non-prefetch projects (their full bundle is already in `bundles`)
-    // or when the core already covers the file.
+    // The project's prebuilt oleans (CDN core shards, or a local project's
+    // single bundle) are the stable CORE — staged once at worker init so a
+    // pre-warmed spare is ready. The per-file DELTA (closure-prefetch) is
+    // staged per compile.
+    const coreBundles = compileMode === 'browser' ? getProjectOleansBundles(project.id) : [];
+    let deltaBundles: Uint8Array[] = [];
     if (compileMode === 'browser') {
       try {
         const delta = await fetchDeltaBundle(
@@ -46,7 +46,7 @@ export function EditorPane() {
           file.content,
           (p) => dispatch(setProgress(p)),
         );
-        if (delta) bundles.push(delta);
+        if (delta) deltaBundles = [delta];
       } catch (e) {
         // Non-fatal: fall through to compile with whatever is staged; Lean
         // will report any unresolved imports.
@@ -57,7 +57,9 @@ export function EditorPane() {
       source: file.content,
       libraryPaths: project.libraryPaths,
       mode: compileMode,
-      projectOleansBundles: bundles.length ? bundles : undefined,
+      coreBundles: compileMode === 'browser' ? coreBundles : undefined,
+      coreKey: compileMode === 'browser' ? project.id : undefined,
+      deltaBundles: compileMode === 'browser' ? deltaBundles : undefined,
     }));
   }
   runCompileRef.current = runCompile;

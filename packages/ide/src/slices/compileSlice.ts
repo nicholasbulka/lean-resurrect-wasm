@@ -21,11 +21,13 @@ export interface CompileRequest {
   source: string;
   libraryPaths?: string[];
   mode?: 'server' | 'browser';
-  /** Optional packed olean bundles to stage into MEMFS for this compile.
-   * Each bundle is independently parsed and unpacked under /work/lib/lean.
-   * Multiple bundles let a project import across dep packages (e.g.
-   * batteries + aesop + Mathlib all at once). */
-  projectOleansBundles?: Uint8Array[];
+  /** Stable project core, staged once at worker INIT (browser mode) so a
+   * pre-warmed spare is ready and the compile only pays its delta. */
+  coreBundles?: Uint8Array[];
+  /** Identity of the core (project id); a change re-inits the worker. */
+  coreKey?: string | null;
+  /** Per-file delta bundles, staged per compile under /lean/lib/lean. */
+  deltaBundles?: Uint8Array[];
 }
 
 /** Sub-state for long-running phases (mostly the browser path's bootstrap). */
@@ -75,7 +77,9 @@ export const compileSource = createAsyncThunk(
       const { compileInBrowser } = await import('../lib/leanWasm');
       return await compileInBrowser(req.source, {
         libraryPaths: req.libraryPaths,
-        projectOleansBundles: req.projectOleansBundles,
+        coreBundles: req.coreBundles,
+        coreKey: req.coreKey,
+        deltaBundles: req.deltaBundles,
         onProgress: (p: CompileProgress) => dispatch(slice.actions.setProgress(p)),
       });
     }

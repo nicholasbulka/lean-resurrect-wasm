@@ -194,7 +194,7 @@ function __leanAwaitCalledRun() {
 
 // --- init: download lean.js + manifest + Init oleans, instantiate WASM ----
 
-async function __leanInitRuntime(leanJsUrl, manifestUrl, cache) {
+async function __leanInitRuntime(leanJsUrl, manifestUrl, cache, initOleansBundles) {
   cache = cache || {};
   const usedCache = {
     wasmModule: !!cache.cachedWasmModule,
@@ -375,6 +375,17 @@ async function __leanInitRuntime(leanJsUrl, manifestUrl, cache) {
     throw new Error('leanWorker: neither Module.callMain nor Module._main is exposed');
   }
 
+  // Pre-stage the stable project core (closure of Mathlib.Init, ~782 MB)
+  // NOW, at init, so a pre-warmed spare worker is fully ready and the next
+  // compile only pays the small per-file delta + elaboration. FS is live
+  // once calledRun fired. Staging happens on the main worker thread; the
+  // pthread running lean_main reads it via the proxied FS.
+  if (initOleansBundles && initOleansBundles.length) {
+    __leanPostProgress({ phase: 'staging', message: 'staging project core' });
+    try { __leanStageBundles(initOleansBundles, 'core'); }
+    catch (e) { console.log('[leanWorker] core staging failed: ' + (e && e.message)); }
+  }
+
   // Ship loaded state back to the main page so subsequent worker spawns
   // can skip the work. Only post what wasn't already provided by the
   // cache (otherwise we'd double-store on every spawn).
@@ -407,6 +418,45 @@ async function __leanInitRuntime(leanJsUrl, manifestUrl, cache) {
   console.log('[leanWorker] ready posted');
 }
 
+// Stage olean bundles into MEMFS at /lean/lib/lean — the install prefix
+// the relinked Lean actually searches under PROXY_TO_PTHREAD (LEAN_PATH is
+// ignored). Stdlib, the Mathlib core, and the per-file delta all merge into
+// this one dir so every import resolves. Bundle wire format: u32 count;
+// per entry u16 pathLen, path bytes, u32 dataLen, data bytes. Returns the
+// number of oleans staged. Used both at init (core, stable) and per-compile
+// (delta) — the split is what lets a pre-warmed worker pre-stage the core.
+const LEAN_LIB_ROOT = '/lean/lib/lean';
+function __leanStageBundles(projectOleansBundles, label) {
+  const FS = self.Module.FS;
+  const bundles = Array.isArray(projectOleansBundles)
+    ? projectOleansBundles
+    : (projectOleansBundles ? [projectOleansBundles] : []);
+  if (bundles.length) try { FS.mkdirTree(LEAN_LIB_ROOT); } catch (_) {}
+  let totalStaged = 0;
+  for (let bi = 0; bi < bundles.length; bi++) {
+    const bundle = bundles[bi];
+    if (!bundle || bundle.byteLength <= 4) continue;
+    const buf = bundle instanceof Uint8Array ? bundle : new Uint8Array(bundle);
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const dec = new TextDecoder();
+    const count = dv.getUint32(0, true);
+    let off = 4;
+    for (let i = 0; i < count; i++) {
+      const pathLen = dv.getUint16(off, true); off += 2;
+      const p = dec.decode(buf.subarray(off, off + pathLen)); off += pathLen;
+      const dataLen = dv.getUint32(off, true); off += 4;
+      const bytes = buf.subarray(off, off + dataLen); off += dataLen;
+      const full = LEAN_LIB_ROOT + '/' + p;
+      try { FS.mkdirTree(full.slice(0, full.lastIndexOf('/'))); } catch (_) {}
+      FS.writeFile(full, bytes);
+    }
+    totalStaged += count;
+    console.log('[leanWorker] staged ' + (label || 'bundle') + ' ' + (bi + 1) + '/' + bundles.length + ': ' + count + ' oleans');
+  }
+  if (totalStaged) console.log('[leanWorker] staged ' + totalStaged + ' total ' + (label || '') + ' oleans at ' + LEAN_LIB_ROOT);
+  return totalStaged;
+}
+
 // --- per-compile entry: re-arm output capture, write source, run main -----
 
 async function __leanRunCompile(requestId, source, libraryPaths, projectOleansBundles) {
@@ -437,40 +487,10 @@ async function __leanRunCompile(requestId, source, libraryPaths, projectOleansBu
   const FS = M.FS;
   const enc = new TextEncoder();
 
-  // Stage every prebuilt-oleans bundle the IDE shipped into MEMFS at
-  // /lean/lib/lean — the install prefix the relinked Lean actually
-  // searches under PROXY_TO_PTHREAD (LEAN_PATH is ignored). Project
-  // oleans (core + per-file delta) merge into the same dir as the staged
-  // stdlib, so all imports — stdlib, Mathlib core, and delta — resolve.
-  // Bundle wire format: u32 count; per entry u16 pathLen, path bytes,
-  // u32 dataLen, data bytes.
-  const projectLibRoot = '/lean/lib/lean';
-  const bundles = Array.isArray(projectOleansBundles)
-    ? projectOleansBundles
-    : (projectOleansBundles ? [projectOleansBundles] : []); // back-compat
-  if (bundles.length) try { FS.mkdirTree(projectLibRoot); } catch (_) {}
-  let totalStaged = 0;
-  for (let bi = 0; bi < bundles.length; bi++) {
-    const bundle = bundles[bi];
-    if (!bundle || bundle.byteLength <= 4) continue;
-    const buf = bundle instanceof Uint8Array ? bundle : new Uint8Array(bundle);
-    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    const dec = new TextDecoder();
-    const count = dv.getUint32(0, true);
-    let off = 4;
-    for (let i = 0; i < count; i++) {
-      const pathLen = dv.getUint16(off, true); off += 2;
-      const p = dec.decode(buf.subarray(off, off + pathLen)); off += pathLen;
-      const dataLen = dv.getUint32(off, true); off += 4;
-      const bytes = buf.subarray(off, off + dataLen); off += dataLen;
-      const full = projectLibRoot + '/' + p;
-      try { FS.mkdirTree(full.slice(0, full.lastIndexOf('/'))); } catch (_) {}
-      FS.writeFile(full, bytes);
-    }
-    totalStaged += count;
-    console.log('[leanWorker] staged bundle ' + (bi + 1) + '/' + bundles.length + ': ' + count + ' oleans');
-  }
-  if (totalStaged) console.log('[leanWorker] staged ' + totalStaged + ' total oleans across ' + bundles.length + ' bundles at ' + projectLibRoot);
+  // Stage this compile's per-file delta bundles. The stable core was
+  // already staged at init time (pre-warm), so this is just the small
+  // set of modules the active file needs beyond the core.
+  __leanStageBundles(projectOleansBundles, 'delta');
 
   FS.writeFile('/work/Input.lean', enc.encode(source));
 
@@ -583,7 +603,7 @@ self.onmessage = (event) => {
       cachedWasmModule: msg.cachedWasmModule,
       cachedOleans: msg.cachedOleans,
       cachedLeanJsSource: msg.cachedLeanJsSource,
-    }).catch((e) => {
+    }, msg.initOleansBundles).catch((e) => {
       postMessage({ type: 'init-error', error: (e && e.message) || String(e) });
     });
     return;

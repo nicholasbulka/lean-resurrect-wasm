@@ -134,6 +134,55 @@ test.describe('closure-prefetch: in-browser Mathlib compile under the 4 GB ceili
     expect(data.some((d: string) => /ℝ|Real/.test(d))).toBe(true);
   });
 
+  // Phase 2 (pre-warm): after a compile, a spare worker re-stages the core
+  // in the background. The NEXT compile (a different Mathlib file) reuses
+  // that warm spare — core staged off the critical path — and must still be
+  // correct. Proves the core(init)/delta(compile) split + worker lifecycle.
+  test('pre-warm: 2nd Mathlib compile reuses a warm spare, stays correct', async ({ page }) => {
+    test.setTimeout(35 * 60_000);
+    const logs: string[] = [];
+    page.on('pageerror', (err) => { logs.push('PAGEERR ' + err.message); console.log('[browser:pageerror]', err.message); });
+    page.on('console', (msg) => { logs.push(msg.text()); });
+    await page.goto('/');
+    await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 30_000 });
+    await importMathlibFromCdn(page);
+
+    const readyCount = () => logs.filter((l) => /ready posted/.test(l)).length;
+
+    // Compile #1 (cold).
+    const t1 = Date.now();
+    const r1 = await compileAndGet(page, CORE_ONLY);
+    const d1 = Date.now() - t1;
+    expect(r1?.status).toBe('ok');
+    assertNoOleanErrors(r1);
+    const readyAfterC1 = readyCount();
+
+    // Wait for the background pre-warm spare to finish initializing (a fresh
+    // 'ready posted' beyond compile #1's), up to 5 min.
+    for (let i = 0; i < 300 && readyCount() <= readyAfterC1; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    expect(readyCount(), 'pre-warm spare should have re-initialized').toBeGreaterThan(readyAfterC1);
+
+    // Compile #2: a different Mathlib file (delta 3). It reuses the warm
+    // spare; the import resolving proves the core (pre-staged) + delta
+    // (fetched now) are both present.
+    await page.evaluate((src) => (window as any).__ideEditor.setValue(src),
+      'import Mathlib.Algebra.Group.Shrink\n#check (2 : Nat)\n');
+    const t2 = Date.now();
+    await page.getByRole('button', { name: /^compile/i }).first().click();
+    await page.waitForFunction(() => {
+      const s = (window as any).__store?.getState?.()?.compile;
+      return s?.status === 'ok' && (s.result?.diagnostics ?? []).some((d: any) => /ℕ|Nat/.test(String(d.data)));
+    }, null, { timeout: 18 * 60_000 });
+    const d2 = Date.now() - t2;
+
+    console.log(`[test] pre-warm timing: compile1(cold)=${(d1 / 1000).toFixed(0)}s compile2(warm)=${(d2 / 1000).toFixed(0)}s`);
+    // Warm compile skips JIT + stdlib + core staging from the critical path.
+    // Assert it's at least somewhat faster; correctness is the hard gate.
+    expect(d2).toBeLessThan(d1);
+  });
+
   test('small-delta file (Group.Shrink, delta 3) fetches + stages the delta', async ({ page }) => {
     test.setTimeout(25 * 60_000);
     wireDiagnostics(page);

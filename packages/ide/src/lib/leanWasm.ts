@@ -52,6 +52,11 @@ interface WorkerState {
   nextRequestId: number;
   /** Cache that survives `disposeLeanWorker` — passed to each new worker. */
   cache: CrossWorkerCache;
+  /** Stable per-project core oleans staged at worker INIT (pre-warm), so a
+   * compile only pays the per-file delta. Identity in `coreKey`; a changed
+   * key (project switch) forces a re-init. */
+  coreBundles: Uint8Array[];
+  coreKey: string | null;
 }
 
 const state: WorkerState = {
@@ -61,6 +66,8 @@ const state: WorkerState = {
   initError: null,
   nextRequestId: 1,
   cache: { wasmModule: null, oleans: null, leanJsSource: null },
+  coreBundles: [],
+  coreKey: null,
 };
 
 function spawnWorker(onProgress: OnProgress): Worker {
@@ -134,11 +141,20 @@ function nextLiveOnProgress(): OnProgress | null {
 }
 
 /**
- * Spawn the worker and have it instantiate Lean + stage Init oleans.
- * Idempotent: subsequent calls return the same promise.
+ * Spawn the worker and have it instantiate Lean, stage stdlib oleans, and
+ * (if given) pre-stage the project core at init. Reuses an in-flight/ready
+ * worker only when it was initialized for the SAME core (`coreKey`); a
+ * different key (project switch) tears the old worker down and re-inits.
  */
-export function ensureLeanLoaded(onProgress: OnProgress = noopProgress): Promise<void> {
-  if (state.ready) return state.ready;
+export function ensureLeanLoaded(
+  coreBundles: Uint8Array[] = [],
+  coreKey: string | null = null,
+  onProgress: OnProgress = noopProgress,
+): Promise<void> {
+  if (state.ready && state.coreKey === coreKey) return state.ready;
+  if (state.ready && state.coreKey !== coreKey) disposeLeanWorker();
+  state.coreKey = coreKey;
+  state.coreBundles = coreBundles;
   state.worker = spawnWorker(onProgress);
   state.ready = new Promise<void>((resolve, reject) => {
     if (!state.worker) {
@@ -160,13 +176,11 @@ export function ensureLeanLoaded(onProgress: OnProgress = noopProgress): Promise
         if (orig) orig.call(state.worker!, ev);
       }
     };
-    // Pass any cached state forward. WebAssembly.Module is transferable
-    // between Workers but should NOT be transferred (we want to keep our
-    // copy too); structured-clone of a Module is cheap (just a handle).
-    // Olean Uint8Arrays are large — transfer their underlying buffers
-    // and re-create on this side when we next need them. For simplicity
-    // here, structured-clone (copy) is acceptable on first spawn since
-    // we only do this once per dispose.
+    // Pass any cached state forward. The compiled WebAssembly.Module
+    // structured-clones cheaply (a handle); oleans are NOT cached back (see
+    // leanWorker cache-fill — they OOM), so the worker re-fetches the
+    // HTTP-cached bundle. initOleansBundles pre-stages the project core so a
+    // pre-warmed worker is fully ready for the next compile's delta.
     state.worker.postMessage({
       type: 'init',
       leanJsUrl: LEAN_JS_URL,
@@ -174,25 +188,45 @@ export function ensureLeanLoaded(onProgress: OnProgress = noopProgress): Promise
       cachedWasmModule: state.cache.wasmModule,
       cachedOleans: state.cache.oleans,
       cachedLeanJsSource: state.cache.leanJsSource,
+      initOleansBundles: coreBundles,
     });
   });
   return state.ready;
 }
 
+/**
+ * Spawn + initialize a worker (staging the project core) WITHOUT compiling,
+ * so the next compile starts warm. Safe to call repeatedly; failures reset
+ * the worker so the next compile retries cleanly rather than wedging.
+ */
+export function prewarmLeanWorker(
+  coreBundles: Uint8Array[],
+  coreKey: string | null,
+  onProgress: OnProgress = noopProgress,
+): Promise<void> {
+  return ensureLeanLoaded(coreBundles, coreKey, onProgress).catch((e) => {
+    console.warn('[leanWasm] prewarm failed:', e);
+    disposeLeanWorker();
+  });
+}
+
 export interface BrowserCompileOptions {
   libraryPaths?: string[];
-  /** Per-compile olean bundles. Each is independently unpacked into
-   * /work/lib/lean/ before callMain. Multiple bundles let a project
-   * import across dep packages (e.g. batteries + aesop together). */
-  projectOleansBundles?: Uint8Array[];
+  /** Stable project core, staged once at worker INIT (pre-warmable). */
+  coreBundles?: Uint8Array[];
+  /** Identity of the core (e.g. project id); a change forces a re-init. */
+  coreKey?: string | null;
+  /** Per-file delta bundles, staged per compile into /lean/lib/lean. */
+  deltaBundles?: Uint8Array[];
   onProgress?: OnProgress;
 }
 
 /**
  * Compile Lean source in-browser. Each call:
- *   - awaits worker init (lazy on first call)
- *   - sends a compile message to the worker
+ *   - awaits worker init (reuses a pre-warmed spare for the same core)
+ *   - sends a compile message (with just the per-file delta)
  *   - awaits the matching `result` reply
+ *   - disposes the worker and pre-warms a fresh spare for next time
  *
  * Hard timeout still enforced because a wedged worker would otherwise
  * leave the UI in a permanent "compiling" state.
@@ -202,30 +236,40 @@ export async function compileInBrowser(
   opts: BrowserCompileOptions = {}
 ): Promise<CompileResult> {
   const onProgress = opts.onProgress ?? noopProgress;
-  await ensureLeanLoaded(onProgress);
+  const coreBundles = opts.coreBundles ?? [];
+  const coreKey = opts.coreKey ?? null;
+  await ensureLeanLoaded(coreBundles, coreKey, onProgress);
   if (!state.worker) throw new Error('leanWasm: worker missing after init');
   if (state.initError) throw state.initError;
 
   const requestId = state.nextRequestId++;
-  // Aesop / Mathlib elaborations easily run minutes per file even from
-  // prebuilt oleans. 5 min keeps the UI from looking permanently wedged
-  // while accommodating real-world Mathlib-class compiles.
-  const HARD_TIMEOUT_MS = 300_000;
+  // Cold Mathlib elaborations load a large olean closure before running.
+  // Keep the UI bound generous but finite. Matches the worker-side budget.
+  const HARD_TIMEOUT_MS = 960_000;
+
+  // After each compile, dispose the worker (PROXY_TO_PTHREAD +
+  // noExitRuntime:false means the runtime tears down once main exits and a
+  // 2nd callMain fails), then immediately pre-warm a fresh spare — JIT'd
+  // wasm (cached) + the project core re-staged — so the *next* compile only
+  // pays its delta + elaboration instead of the full cold start.
+  const finalize = () => {
+    disposeLeanWorker();
+    // Re-warm a spare even with an empty core: the next compile still skips
+    // stdlib staging + wasm JIT readiness. dispose terminated the old worker
+    // first, so we don't hold two full MEMFS images at once.
+    void prewarmLeanWorker(coreBundles, coreKey);
+  };
 
   return new Promise<CompileResult>((resolve, reject) => {
     const timeoutHandle = setTimeout(() => {
       state.pending.delete(requestId);
+      finalize();
       reject(new Error('compileInBrowser timeout (' + HARD_TIMEOUT_MS / 1000 + 's)'));
     }, HARD_TIMEOUT_MS);
 
-    // After each compile, dispose the worker. The Lean WASM build uses
-    // PROXY_TO_PTHREAD with noExitRuntime: false, so the runtime tears
-    // down once main exits — Module is dead and a second callMain in
-    // the same worker fails with [object ErrorEvent]. Re-spawning is
-    // cheap because the browser HTTP-caches lean.js + the staged oleans.
     state.pending.set(requestId, {
-      resolve: (r) => { clearTimeout(timeoutHandle); disposeLeanWorker(); resolve(r); },
-      reject: (e) => { clearTimeout(timeoutHandle); disposeLeanWorker(); reject(e); },
+      resolve: (r) => { clearTimeout(timeoutHandle); finalize(); resolve(r); },
+      reject: (e) => { clearTimeout(timeoutHandle); finalize(); reject(e); },
       onProgress,
     });
 
@@ -234,7 +278,7 @@ export async function compileInBrowser(
       requestId,
       source,
       libraryPaths: opts.libraryPaths ?? [],
-      projectOleansBundles: opts.projectOleansBundles ?? [],
+      projectOleansBundles: opts.deltaBundles ?? [],
     });
   });
 }
