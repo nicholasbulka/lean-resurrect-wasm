@@ -183,6 +183,33 @@ test.describe('closure-prefetch: in-browser Mathlib compile under the 4 GB ceili
     expect(d2).toBeLessThan(d1);
   });
 
+  // Demand paging (safety net): with closure-prefetch DISABLED, the delta
+  // oleans are missing; the worker must fetch them on FS miss from the CDN
+  // build/ tree (sync XHR) and still compile. This is the proof the
+  // FS-interceptor fires under PROXY_TO_PTHREAD (proxied to the main worker)
+  // — the thing the Node spike could not verify.
+  test('demand paging: missing oleans fetched on FS miss when prefetch is off', async ({ page }) => {
+    test.setTimeout(25 * 60_000);
+    const logs: string[] = [];
+    page.on('pageerror', (err) => { logs.push('PAGEERR ' + err.message); console.log('[browser:pageerror]', err.message); });
+    page.on('console', (msg) => { logs.push(msg.text()); });
+    await page.goto('/');
+    await page.waitForFunction(() => (window as any).__ideEditor?.ready === true, null, { timeout: 30_000 });
+    // Force reliance on demand paging: skip the delta prefetch entirely.
+    await page.evaluate(() => { (window as any).__leanDisableDeltaPrefetch = true; });
+    await importMathlibFromCdn(page);
+
+    // Group.Shrink needs 3 modules beyond the core. With prefetch off those
+    // oleans are absent, so each must be demand-fetched on the FS miss.
+    const result = await compileAndGet(page, 'import Mathlib.Algebra.Group.Shrink\n#check (2 : Nat)\n');
+    console.log('[test] demand-paging compile:', JSON.stringify(result));
+
+    expect(result?.status).toBe('ok');
+    assertNoOleanErrors(result);
+    expect(logs.some((l) => /demand-paging installed/.test(l)), 'interceptor installed').toBe(true);
+    expect(logs.some((l) => /demand-fetched/.test(l)), 'at least one olean demand-fetched').toBe(true);
+  });
+
   test('small-delta file (Group.Shrink, delta 3) fetches + stages the delta', async ({ page }) => {
     test.setTimeout(25 * 60_000);
     wireDiagnostics(page);

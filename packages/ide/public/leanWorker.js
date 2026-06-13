@@ -60,6 +60,60 @@ function __leanInstallNodeShim() {
   }
 }
 
+// Install the demand-paging FS interceptor. On an ENOENT (errno 44) read
+// miss for an olean part under /lean/lib/lean, synchronously fetch it from
+// the CDN build/ tree (self.__leanCdnBuildBase), stage it into MEMFS, and
+// retry. No-op unless a CDN build base was provided. Mirrors the resolver
+// in preflight/trace_fs.js (which works in Node but can't fire there — the
+// browser proxies pthread FS calls to this thread, so the override sticks).
+const __LEAN_DEMAND_EXTS = ['.olean', '.olean.private', '.olean.server', '.ir', '.ilean'];
+const __LEAN_LIB_PREFIX = '/lean/lib/lean/';
+function installDemandPaging(FS) {
+  const base = self.__leanCdnBuildBase;
+  if (!base) return;
+  self.__leanDemandFetched = 0;
+  function demandFetch(p) {
+    if (typeof p !== 'string' || !p.startsWith(__LEAN_LIB_PREFIX)) return false;
+    if (!__LEAN_DEMAND_EXTS.some((e) => p.endsWith(e))) return false;
+    const rel = p.slice(__LEAN_LIB_PREFIX.length);
+    let bytes;
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', base + '/' + rel, false); // synchronous — allowed in workers
+      xhr.responseType = 'arraybuffer';
+      xhr.send();
+      if (xhr.status !== 200) return false;
+      bytes = new Uint8Array(xhr.response);
+    } catch (_) { return false; }
+    const parts = p.split('/').filter(Boolean);
+    let acc = '';
+    for (let i = 0; i < parts.length - 1; i++) { acc += '/' + parts[i]; try { FS.mkdir(acc); } catch (_) {} }
+    try { FS.writeFile(p, bytes); } catch (_) { return false; }
+    self.__leanDemandFetched++;
+    console.log('[leanWorker] demand-fetched ' + rel + ' (' + bytes.length + ' b)');
+    return true;
+  }
+  const origStat = FS.stat;
+  FS.stat = function (p, dontFollow) {
+    try { return origStat.call(FS, p, dontFollow); }
+    catch (e) {
+      if (e && e.errno === 44 && demandFetch(p)) return origStat.call(FS, p, dontFollow);
+      throw e;
+    }
+  };
+  const WRITE_MASK = 1 | 2 | 64; // O_WRONLY | O_RDWR | O_CREAT — only page in reads
+  const origOpen = FS.open;
+  FS.open = function (p, flags, mode) {
+    try { return origOpen.call(FS, p, flags, mode); }
+    catch (e) {
+      const fn = typeof flags === 'number' ? flags : 0;
+      if (e && e.errno === 44 && (fn & WRITE_MASK) === 0 && demandFetch(p)) return origOpen.call(FS, p, flags, mode);
+      throw e;
+    }
+  };
+  console.log('[leanWorker] demand-paging installed (base=' + base + ')');
+}
+
 function __leanSetupModule(leanJsBaseUrl, leanJsUrl, oleanBytes) {
   self.Module = {
     arguments: [],
@@ -141,6 +195,15 @@ function __leanSetupModule(leanJsBaseUrl, leanJsUrl, oleanBytes) {
         // code stats /lean/bin, so create that tree too.
         try { FS.mkdirTree('/lean/bin'); } catch (_) {}
         try { FS.mkdirTree('/lean/lib/lean'); } catch (_) {}
+
+        // Demand-paging safety net. Closure-prefetch stages the modules the
+        // import-graph says a file needs; if the graph ever MISSES one (stale
+        // peg, parse edge case), Lean would fail with "object file ... does
+        // not exist". Instead, intercept the FS miss and fetch that olean
+        // synchronously from the CDN build/ tree, stage it, and retry. Under
+        // PROXY_TO_PTHREAD the pthread's FS calls are proxied to THIS (main)
+        // worker thread, so the override fires and sync XHR is allowed here.
+        installDemandPaging(FS);
       },
     ],
     onAbort: (what) => {
@@ -599,6 +662,8 @@ self.onmessage = (event) => {
   if (!msg || typeof msg !== 'object') return;
   if (msg.type === 'init') {
     if (__leanInitPromise) return;
+    // CDN build base for the demand-paging safety net (read in preRun).
+    self.__leanCdnBuildBase = msg.cdnBuildBase || null;
     __leanInitPromise = __leanInitRuntime(msg.leanJsUrl, msg.manifestUrl, {
       cachedWasmModule: msg.cachedWasmModule,
       cachedOleans: msg.cachedOleans,

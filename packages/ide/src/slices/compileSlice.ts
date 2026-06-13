@@ -28,6 +28,8 @@ export interface CompileRequest {
   coreKey?: string | null;
   /** Per-file delta bundles, staged per compile under /lean/lib/lean. */
   deltaBundles?: Uint8Array[];
+  /** CDN build/ base URL for the demand-paging safety net (or null). */
+  cdnBuildBase?: string | null;
 }
 
 /** Sub-state for long-running phases (mostly the browser path's bootstrap). */
@@ -80,6 +82,7 @@ export const compileSource = createAsyncThunk(
         coreBundles: req.coreBundles,
         coreKey: req.coreKey,
         deltaBundles: req.deltaBundles,
+        cdnBuildBase: req.cdnBuildBase,
         onProgress: (p: CompileProgress) => dispatch(slice.actions.setProgress(p)),
       });
     }

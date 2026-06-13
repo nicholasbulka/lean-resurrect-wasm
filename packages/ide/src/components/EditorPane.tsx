@@ -5,7 +5,7 @@ import type { EditorView } from '@codemirror/view';
 import { useAppDispatch, useAppSelector } from '../store';
 import { updateFileContent, getProjectOleansBundles } from '../slices/projectsSlice';
 import { compileSource, cancelCurrentCompile, setProgress } from '../slices/compileSlice';
-import { fetchDeltaBundle } from '../lib/cdnLoader';
+import { fetchDeltaBundle, getProjectCdnMeta } from '../lib/cdnLoader';
 import { LibraryPaths } from './LibraryPaths';
 import { createCm6Bridge } from '../lib/editorBridge';
 import { CodeMirror } from '../lib/cm/CodeMirror';
@@ -38,8 +38,15 @@ export function EditorPane() {
     // pre-warmed spare is ready. The per-file DELTA (closure-prefetch) is
     // staged per compile.
     const coreBundles = compileMode === 'browser' ? getProjectOleansBundles(project.id) : [];
+    // Demand-paging safety net: a CDN project's build/ base lets the worker
+    // fetch any olean the closure-prefetch delta missed. Always wire it for
+    // CDN projects, independent of the delta computation.
+    const cdnMeta = compileMode === 'browser' ? getProjectCdnMeta(project.id) : undefined;
+    const cdnBuildBase = cdnMeta ? `/cdn/projects/${encodeURIComponent(cdnMeta.slug)}/build` : null;
+    // Test hook: force reliance on demand paging by skipping delta prefetch.
+    const skipDelta = (window as any).__leanDisableDeltaPrefetch === true;
     let deltaBundles: Uint8Array[] = [];
-    if (compileMode === 'browser') {
+    if (compileMode === 'browser' && !skipDelta) {
       try {
         const delta = await fetchDeltaBundle(
           project.id,
@@ -49,7 +56,7 @@ export function EditorPane() {
         if (delta) deltaBundles = [delta];
       } catch (e) {
         // Non-fatal: fall through to compile with whatever is staged; Lean
-        // will report any unresolved imports.
+        // will report any unresolved imports (or demand paging covers them).
         console.warn('[ide] delta prefetch failed:', e);
       }
     }
@@ -60,6 +67,7 @@ export function EditorPane() {
       coreBundles: compileMode === 'browser' ? coreBundles : undefined,
       coreKey: compileMode === 'browser' ? project.id : undefined,
       deltaBundles: compileMode === 'browser' ? deltaBundles : undefined,
+      cdnBuildBase: compileMode === 'browser' ? cdnBuildBase : undefined,
     }));
   }
   runCompileRef.current = runCompile;

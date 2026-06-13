@@ -57,6 +57,8 @@ interface WorkerState {
    * key (project switch) forces a re-init. */
   coreBundles: Uint8Array[];
   coreKey: string | null;
+  /** CDN build/ base URL for the demand-paging safety net (or null). */
+  cdnBuildBase: string | null;
 }
 
 const state: WorkerState = {
@@ -68,6 +70,7 @@ const state: WorkerState = {
   cache: { wasmModule: null, oleans: null, leanJsSource: null },
   coreBundles: [],
   coreKey: null,
+  cdnBuildBase: null,
 };
 
 function spawnWorker(onProgress: OnProgress): Worker {
@@ -149,12 +152,14 @@ function nextLiveOnProgress(): OnProgress | null {
 export function ensureLeanLoaded(
   coreBundles: Uint8Array[] = [],
   coreKey: string | null = null,
+  cdnBuildBase: string | null = null,
   onProgress: OnProgress = noopProgress,
 ): Promise<void> {
   if (state.ready && state.coreKey === coreKey) return state.ready;
   if (state.ready && state.coreKey !== coreKey) disposeLeanWorker();
   state.coreKey = coreKey;
   state.coreBundles = coreBundles;
+  state.cdnBuildBase = cdnBuildBase;
   state.worker = spawnWorker(onProgress);
   state.ready = new Promise<void>((resolve, reject) => {
     if (!state.worker) {
@@ -189,6 +194,7 @@ export function ensureLeanLoaded(
       cachedOleans: state.cache.oleans,
       cachedLeanJsSource: state.cache.leanJsSource,
       initOleansBundles: coreBundles,
+      cdnBuildBase,
     });
   });
   return state.ready;
@@ -202,9 +208,10 @@ export function ensureLeanLoaded(
 export function prewarmLeanWorker(
   coreBundles: Uint8Array[],
   coreKey: string | null,
+  cdnBuildBase: string | null = null,
   onProgress: OnProgress = noopProgress,
 ): Promise<void> {
-  return ensureLeanLoaded(coreBundles, coreKey, onProgress).catch((e) => {
+  return ensureLeanLoaded(coreBundles, coreKey, cdnBuildBase, onProgress).catch((e) => {
     console.warn('[leanWasm] prewarm failed:', e);
     disposeLeanWorker();
   });
@@ -218,6 +225,8 @@ export interface BrowserCompileOptions {
   coreKey?: string | null;
   /** Per-file delta bundles, staged per compile into /lean/lib/lean. */
   deltaBundles?: Uint8Array[];
+  /** CDN build/ base URL for the demand-paging safety net (or null). */
+  cdnBuildBase?: string | null;
   onProgress?: OnProgress;
 }
 
@@ -238,7 +247,8 @@ export async function compileInBrowser(
   const onProgress = opts.onProgress ?? noopProgress;
   const coreBundles = opts.coreBundles ?? [];
   const coreKey = opts.coreKey ?? null;
-  await ensureLeanLoaded(coreBundles, coreKey, onProgress);
+  const cdnBuildBase = opts.cdnBuildBase ?? null;
+  await ensureLeanLoaded(coreBundles, coreKey, cdnBuildBase, onProgress);
   if (!state.worker) throw new Error('leanWasm: worker missing after init');
   if (state.initError) throw state.initError;
 
@@ -257,7 +267,7 @@ export async function compileInBrowser(
     // Re-warm a spare even with an empty core: the next compile still skips
     // stdlib staging + wasm JIT readiness. dispose terminated the old worker
     // first, so we don't hold two full MEMFS images at once.
-    void prewarmLeanWorker(coreBundles, coreKey);
+    void prewarmLeanWorker(coreBundles, coreKey, cdnBuildBase);
   };
 
   return new Promise<CompileResult>((resolve, reject) => {
