@@ -1,0 +1,113 @@
+# Option A — `uv_spawn` shim for in-WASM Lean LSP (foundation, 2026-06-13)
+
+Goal: let Lean's `--server` watchdog "fork" its `--worker` elaboration
+subprocesses inside the WASM sandbox, so we get a persistent, incremental
+in-browser LSP (hover / goto-def / goal-state / fast re-elaborate) instead
+of the per-compile spawn model.
+
+This document is the **foundation** for that multi-session effort: the
+confirmed protocol, the corrected hook mechanism, the pipe design, the
+staged plan, and the open risks. No rebuilds were run to produce it.
+
+## State of the world (confirmed this session)
+
+- `lean --server` boots in our WASM and handles **one-shot** LSP fine
+  (initialize → full capabilities). Proven earlier (`spike.cjs`).
+- The **JSPI build** (`build-wasm/stage1/bin/lean-jspi-pt.{js,wasm}`,
+  USE_PTHREADS + JSPI, no PROXY_TO_PTHREAD) solved continuous stdin via
+  `fd_read` suspension and reaches the real wall:
+- **Wall: `uv_spawn`.** After `didOpen` the watchdog spawns a `--worker`
+  subprocess; Emscripten can't fork → `ENOSYS` (errno 52) → watchdog exits.
+- The current *production* binary (MT=ON+PROXY) hits the earlier stdin wall
+  (`ESPIPE`, error 29) — it is NOT the LSP foundation; the JSPI build is.
+
+## The watchdog↔worker protocol is just LSP-over-pipe (de-risked)
+
+`vendor/lean4-src/src/Lean/Server/Watchdog.lean:875-911` — `startFileWorker`:
+```
+Process.spawn { cmd := workerPath, args := #["--worker"] ++ st.args ++ #[uri],
+                stdin := piped, stdout := piped, stderr := inherit, setsid := true }
+... then over the worker's stdin pipe:
+fw.stdin.writeLspRequest      ⟨0, "initialize", st.initParams⟩
+fw.stdin.writeLspNotification { method := "textDocument/didOpen", ... }
+```
+So the watchdog drives the worker with **standard LSP frames over a pipe**,
+and `forwardMessages` shuttles bytes between client↔watchdog↔worker. The
+shim therefore does **not** need to understand the protocol — it only has to
+transport bytes faithfully between two virtualized pipes. Lean's own
+watchdog + worker speak LSP to each other.
+
+## CORRECTED hook mechanism (the key foundation finding)
+
+Originally assumed: "override the `uv_spawn` import in JS, like `fd_read`."
+**This is infeasible.** Evidence (against `lean-jspi-pt.js`):
+- `_uv_spawn` / `_posix_spawn` are `wasmExports["uv_spawn"]` etc. — compiled
+  INTO the wasm, not JS imports. Reassigning the JS wrapper does NOT catch
+  internal wasm→wasm calls (Lean runtime → libuv `uv_spawn` is wasm-internal).
+- There are **no** process syscalls as JS functions: `fork`, `execve`,
+  `clone`, `__syscall_clone`, `__emscripten_fork` are all absent. Only
+  FS/socket `__syscall_*` exist. So `posix_spawn` bottoms out in compiled
+  musl returning ENOSYS — there is no JS syscall to intercept either.
+
+**Real mechanism: a link-level override.** Provide our own `uv_spawn`
+(and the minimal libuv process/pipe surface) in a linked C object that the
+linker resolves ahead of libuv's, implemented with `EM_JS` so it calls out
+to JS. That JS launches a Web Worker (browser) / worker_thread (Node)
+running the same `lean.wasm` with `--worker` argv, and wires the worker's
+stdin/stdout to SharedArrayBuffer pipes the watchdog's pipe fds read/write.
+This needs a **rebuild** (via the existing `docker/relink-jspi-pt.sh` plus
+the shim object), not a runtime patch.
+
+## Architecture
+
+```
+ client (IDE)  ──LSP──▶  [watchdog wasm]  ──LSP-over-SAB-pipe──▶  [worker wasm (Web Worker)]
+       ▲                      │  uv_spawn(EM_JS) ───────────────────▶ spawn Worker(--worker uri)
+       └───────LSP────────────┘  uv_pipe read/write ⇄ SAB ring buffers ⇄ worker stdin/stdout
+```
+- Both watchdog and worker do I/O via the **proven JSPI `fd_read`/`fd_write`
+  suspension** (`spike-fdread.cjs`) over SAB ring buffers.
+- `uv_spawn` shim: allocate two SAB ring buffers (w→worker stdin, worker→w
+  stdout), start a Worker with the same wasm + `['--worker', ...args, uri]`,
+  return a fake pid + wire the libuv pipe handles to the SABs.
+- Also shim (minimal): `uv_pipe_*` read/write to the SABs, `uv_process_kill`
+  / `uv_signal_*` / `uv_kill` → terminate the Worker (setsid:=true wants a
+  killable session). `uv_process_get_pid` → the fake pid.
+
+## Staged plan (multi-session; ~1-2 weeks, rebuild-bound)
+
+1. **Single-worker shim, Node first.** Link a `uv_spawn` EM_JS override that
+   spawns ONE worker_thread; virtualize the two pipes via SAB. Drive with
+   the existing JSPI fd I/O on both sides. Target: watchdog gets past
+   `didOpen`, worker elaborates, a hover/goal response returns. (Several
+   25-min relinks expected — budget 4-8.)
+2. **Lifecycle + cancellation.** `uv_process_kill`/signals → terminate the
+   worker; restart-on-crash (FileWorker.forceExit codes 1/2 at
+   `FileWorker.lean:398,1094`); multiple files → multiple workers.
+3. **Browser port.** worker_thread → Web Worker; confirm SAB + Atomics +
+   COOP/COEP (already set) + nested-Worker spawn from a Worker.
+4. **IDE wiring.** Persistent session, CM6 hoverTooltip / goal panel, on
+   `didChange` debounce. Reuses the closure-prefetch staging for the worker's
+   olean FS.
+
+## Open risks / unknowns
+
+- **Nested Workers from a pthread Worker.** The watchdog runs under
+  USE_PTHREADS; spawning a Web Worker from within may need care
+  (Emscripten's own pthread pool also uses Workers).
+- **Per-worker olean FS.** Each worker needs the same `/lean/lib/lean`
+  staging; reuse closure-prefetch (core staged once, demand-paging for the
+  rest) per worker. Memory: N workers × ~1 GB each — tight on a 4 GB
+  wasm32 browser tab; may need to cap concurrent workers.
+- **setsid / signals semantics** under the shim are approximate.
+- **Link precedence**: confirm our `uv_spawn` wins over libuv's (libuv is a
+  static archive; provide the object before it, or `--allow-multiple-definition`
+  / wrap via `-Wl,--wrap=uv_spawn`). `--wrap` may be the cleanest hook and
+  avoids editing libuv source.
+
+## Scaffold in this directory
+
+- `uv-spawn-shim.c` — skeleton C override (EM_JS) + the `--wrap` approach.
+- `sab-pipe.mjs` — SharedArrayBuffer ring-buffer pipe (producer/consumer with
+  Atomics) shared by host + worker sides.
+Both are starting points, not yet wired to a build.
