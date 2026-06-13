@@ -37,7 +37,40 @@ shim therefore does **not** need to understand the protocol — it only has to
 transport bytes faithfully between two virtualized pipes. Lean's own
 watchdog + worker speak LSP to each other.
 
-## CORRECTED hook mechanism (the key foundation finding)
+## MILESTONE 1a RESULT (2026-06-13): wrap-uv_spawn is the WRONG hook
+
+Relinked the JSPI+pthread binary with `-Wl,--wrap=uv_spawn` + the EM_JS shim
+(`docker/relink-jspi-pt-shim.sh`, link-only, ~works). Drove `--server`
+through `didOpen` (`spike-fdread.cjs` on `lean-jspi-pt-shim.js`):
+initialize → capabilities → didOpen → fileProgress → **`error code 52`** —
+but `[uv-spawn-shim] __wrap_uv_spawn intercepted` **never logged**. The wrap
+caught nothing because **Lean's WASM spawn path doesn't call `uv_spawn`**.
+
+Source proof (`vendor/lean4-src/src/runtime/process.cpp`): `#if LEAN_WINDOWS`
+(CreateProcess) `#else` … `#endif` — the POSIX `#else` branch is what
+emscripten compiles, and it spawns with raw **`fork()` (line 445) +
+`execvp()` (line 504)**. Emscripten stubs `fork` → ENOSYS → `throw errno`
+(line 447) → the watchdog's "error code 52".
+
+**You cannot shim `fork()`** (can't duplicate a wasm instance). So the
+interception MUST be at the whole-spawn-function level:
+
+### CORRECTED-AGAIN mechanism: patch `lean_io_process_spawn`
+Patch the static `spawn(...)` / `lean_io_process_spawn` (process.cpp:437/552)
+so that under emscripten it does NOT fork/exec but instead (via EM_JS):
+1. launches a Web Worker / worker_thread running the same wasm with argv
+   `[procName, ...args]` (the watchdog passes `["--worker", ...st.args, uri]`),
+2. creates stdin/stdout pipe fds backed by SAB ring buffers, returns the
+   child object (`mk_cnstr(0, parent_stdin, parent_stdout, parent_stderr, ...)`
+   + pid + setsid byte) exactly as the fork path does — so the watchdog's
+   subsequent `fdopen`/read/write on those fds Just Work.
+The hard sub-problem becomes: wire those returned fds to the SAB pipes at
+the emscripten FS layer so `fdopen()` + libc read/write reach the worker.
+This is a **Lean source patch + full rebuild** (closer to Option B, but
+surgical — only `spawn`, keeping the watchdog/worker split intact), NOT a
+libuv wrap. `uv-spawn-shim.c` / `--wrap` are dead ends; keep for the record.
+
+## (superseded) CORRECTED hook mechanism — link-level uv_spawn wrap
 
 Originally assumed: "override the `uv_spawn` import in JS, like `fd_read`."
 **This is infeasible.** Evidence (against `lean-jspi-pt.js`):

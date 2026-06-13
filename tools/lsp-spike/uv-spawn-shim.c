@@ -29,7 +29,11 @@
  * struct offsets (TODO: pin offsets from the built libuv, or include uv.h
  * and pass typed fields). Returns 0 on success, like uv_spawn. */
 EM_JS(int, lean_shim_spawn, (uintptr_t loop, uintptr_t handle, uintptr_t options), {
-  // TODO(option-a): read argv/cmd from `options` (uv_process_options_t),
+  // MILESTONE 1a: prove the --wrap interception fires. Log, then defer to
+  // the JS worker launcher if wired, else return ENOSYS (same as before,
+  // but now from OUR path — the log is the proof of interception).
+  try { console.error('[uv-spawn-shim] __wrap_uv_spawn intercepted: loop=' + loop + ' handle=' + handle + ' options=' + options); } catch (e) {}
+  // TODO(option-a 1b): read argv/cmd from `options` (uv_process_options_t),
   // start a Worker with ['--worker', ...args, uri], allocate SAB pipes,
   // store {pid -> worker, stdinPipe, stdoutPipe} in a JS registry, and
   // back-patch the uv_process_t `handle` pid field. Return 0.
