@@ -70,6 +70,40 @@ This is a **Lean source patch + full rebuild** (closer to Option B, but
 surgical — only `spawn`, keeping the watchdog/worker split intact), NOT a
 libuv wrap. `uv-spawn-shim.c` / `--wrap` are dead ends; keep for the record.
 
+## MILESTONE 1b-i RESULT (2026-06-13): source hook FIRES, argv captured
+
+Patched `process.cpp` spawn with an `EM_JS` probe (`scripts/patch-lsp-spawn.js`)
++ full rebuild (`scripts/docker-relink-jspi-pt.sh`, ~25 min). Drove `--server`
+past `didOpen`:
+```
+[spawn-probe] cmd=.../bin/lean args=--worker inmemory:///main.lean
+Watchdog error: ... (error code: 52)   ← still the unpatched fork() below
+```
+The probe fired at exactly the watchdog's worker-spawn site (where --wrap was
+silent), confirming the source-patch hook is correct, and captured the exact
+argv: `--worker <uri>` (plus `st.args` when a project is open). The watchdog
+then dies at the still-unpatched fork() — as designed for 1b-i.
+
+The probe delegates to `Module.__leanSpawnWorker(cmd, args)`, so the actual
+Web-Worker launch + SAB pipe wiring is now iterable IN JS with no rebuild.
+
+### Next: milestone 1b-ii (one more rebuild, then rebuild-free)
+Extend `patch-lsp-spawn.js` so spawn, under `__EMSCRIPTEN__`, calls
+`int lean_em_spawn(cmd, args, &inFd, &outFd, &errFd)` returning a pid; if
+pid>0, build the child object from those fds (mirror the fork path's
+`mk_cnstr(0, parent_stdin, parent_stdout, parent_stderr, ...)` + pid +
+setsid) and RETURN, skipping fork; else fall through. Rebuild once. Then in
+JS (`Module.__leanSpawnWorker`):
+1. `new Worker` running the same wasm with the captured `--worker` argv
+   (reuse the leanWorker bootstrap: NODEFS/MEMFS, oleans, JSPI fd hooks);
+2. allocate SAB ring-buffer pipes (`sab-pipe.mjs`) and register emscripten FS
+   fds backed by them, returning those fd numbers — THE CRUX: the watchdog's
+   `fdopen()`+read/write on the returned fds must reach the worker. Two routes:
+   (a) register a custom FS device whose read/write drive the SAB (cleanest),
+   (b) point libuv/the fd at an emscripten pipe and bridge to SAB.
+3. the spawned worker reads/writes ITS stdin/stdout via the same JSPI fd_read/
+   fd_write hook, bound to the other end of the SAB pipes.
+
 ## (superseded) CORRECTED hook mechanism — link-level uv_spawn wrap
 
 Originally assumed: "override the `uv_spawn` import in JS, like `fd_read`."
