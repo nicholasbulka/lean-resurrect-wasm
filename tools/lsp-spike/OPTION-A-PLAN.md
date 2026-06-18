@@ -87,13 +87,48 @@ then dies at the still-unpatched fork() — as designed for 1b-i.
 The probe delegates to `Module.__leanSpawnWorker(cmd, args)`, so the actual
 Web-Worker launch + SAB pipe wiring is now iterable IN JS with no rebuild.
 
-### Next: milestone 1b-ii (one more rebuild, then rebuild-free)
-Extend `patch-lsp-spawn.js` so spawn, under `__EMSCRIPTEN__`, calls
-`int lean_em_spawn(cmd, args, &inFd, &outFd, &errFd)` returning a pid; if
-pid>0, build the child object from those fds (mirror the fork path's
-`mk_cnstr(0, parent_stdin, parent_stdout, parent_stderr, ...)` + pid +
-setsid) and RETURN, skipping fork; else fall through. Rebuild once. Then in
-JS (`Module.__leanSpawnWorker`):
+## MILESTONE 1b-ii RESULT (2026-06-17): return-path FIRES, watchdog drives worker stdin
+
+Rewrote `patch-lsp-spawn.js` to the return-path version: under `__EMSCRIPTEN__`,
+spawn calls `int lean_em_spawn(cmd,args)` → `Module.__leanSpawnWorker(cmd,args)`,
+which returns `{pid,inFd,outFd,errFd}`; fds read back via `lean_em_last_fd(which)`
+(pointer-free ABI). If pid>0 the runtime builds the SAME child object the fork
+path builds (`mk_cnstr(0, parent_stdin, parent_stdout, parent_stderr,
+sizeof(pid_t)+sizeof(uint8_t))` + `cnstr_set_uint32` pid + `cnstr_set_uint8`
+setsid) and RETURNs, skipping fork; else falls through. Full rebuild via
+`scripts/docker-relink-jspi-pt.sh` (ccache → ~few min, not 25).
+
+Validated with `tools/lsp-spike/spike-spawn-smoke.cjs`, which stubs
+`__leanSpawnWorker` to hand back real (empty) MEMFS fds + a fake pid:
+```
+[smoke] __leanSpawnWorker FIRED cmd=.../bin/lean args="--worker\ninmemory:///main.lean\n"
+[smoke] returning inFd=8 outFd=9
+worker stdin bytes written by watchdog: 443
+worker stdin preview: Content-Length: 134 ... "method":"initialize" ... "method":"textDocument/didOpen" ...
+Watchdog error: Cannot read LSP message: Stream was closed   ← EXPECTED (empty outFd → EOF)
+```
+- spawn return-path fires; **NO error 52** (fork bypassed);
+- child object is correct — the watchdog `fdopen(inFd,"w")` + wrote 443 bytes of
+  valid LSP frames (`initialize`, then `didOpen`) into the worker's stdin, exactly
+  per `Watchdog.lean:875-911`;
+- the trailing "Stream was closed" exit is correct: the stub's outFd is an empty
+  MEMFS file, so the watchdog's read of the worker reply hits EOF. No real worker yet.
+
+**The C++ side of Option A is DONE.** Everything remaining is rebuild-free JS.
+
+### TWO OPERATIONAL GOTCHAS (cost real debugging — do not relearn)
+1. **Node flag.** This glue needs the NEW JSPI API (`WebAssembly.Suspending`):
+   run `node --experimental-wasm-jspi --max-old-space-size=10240` (Node 24).
+   Without it: "WebAssembly.Suspending is not a constructor". (`stack-switching`
+   alone also boots but is the older flag.) pthread Workers inherit `process.execArgv`,
+   so the flag propagates to the pool automatically.
+2. **No idle gap after `initialize`.** The watchdog exits (ExitStatus 1) if left
+   idle after responding to `initialize`. Send `initialize` → `initialized` →
+   `didOpen` BACK-TO-BACK with no `await`/delay between them, or it dies before the
+   worker spawn. (A 1500ms gap reproduced the spontaneous "onExit status=undefined".)
+
+### Next: milestone 1b-iii — real worker + SAB pipes (rebuild-free JS)
+Build `Module.__leanSpawnWorker` for real. In JS (`Module.__leanSpawnWorker`):
 1. `new Worker` running the same wasm with the captured `--worker` argv
    (reuse the leanWorker bootstrap: NODEFS/MEMFS, oleans, JSPI fd hooks);
 2. allocate SAB ring-buffer pipes (`sab-pipe.mjs`) and register emscripten FS
