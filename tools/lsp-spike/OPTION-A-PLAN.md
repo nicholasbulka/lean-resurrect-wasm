@@ -127,6 +127,28 @@ Watchdog error: Cannot read LSP message: Stream was closed   ← EXPECTED (empty
    `didOpen` BACK-TO-BACK with no `await`/delay between them, or it dies before the
    worker spawn. (A 1500ms gap reproduced the spontaneous "onExit status=undefined".)
 
+### 1b-iii EXECUTION MODEL (2026-06-18, probe `spike-probe-fds.cjs`) — de-risks the crux
+Replaced the stub fds with a custom emscripten **FS char device** (`FS.registerDevice`
++ `FS.mkdev` + `FS.open`) backing inFd/outFd, instrumented to log thread + intercept.
+Findings (no real worker; outFd backed by an empty SAB so reads time out):
+- `__leanSpawnWorker` runs on the **main thread**. The watchdog's writes to inFd and
+  reads from outFd BOTH go through our **device `stream_ops`** — device is the correct
+  interception layer (NOT the WASI `fd_read` import: the import override, main-thread
+  only, never saw fd 8/9).
+- Device ops always run on **main** (`thread=false`) even though the worker-stdout READ
+  is *initiated on a pthread* — emscripten **proxies FS syscalls to the main thread**.
+  (That's why the main-thread `fd_read` import override never sees them.)
+- `Atomics.wait` inside the device read on main **did NOT throw** and the timed waits
+  elapsed cleanly — **Node allows blocking the main thread**. So a SAB-backed blocking
+  `stream_ops.read` (woken by the worker thread's `Atomics.notify`) is viable. The
+  watchdog's client-stdin read (fd 0) stays async via the proven JSPI import override.
+- **Browser caveat (stage 3):** `Atomics.wait` throws on a browser main thread, so the
+  browser port must run the watchdog itself inside a Worker. Node is fine now.
+
+**Architecture decided:** inFd = device write → SAB `pipeToWorker`; outFd = device read
+(blocking `Atomics.wait`) ← SAB `pipeFromWorker`; worker = `worker_thread` running the
+same wasm `--worker <uri>`, its stdin/stdout bound to the other ends of the two SABs.
+
 ### Next: milestone 1b-iii — real worker + SAB pipes (rebuild-free JS)
 Build `Module.__leanSpawnWorker` for real. In JS (`Module.__leanSpawnWorker`):
 1. `new Worker` running the same wasm with the captured `--worker` argv
