@@ -142,12 +142,32 @@ worker_thread), on Node 24. On a successful (non-flaky) run:
   outFd **got 75 B** (the initialize response). VERDICT: inFd YES, outFd YES,
   `Atomics.wait` blockable YES. The FS-device + SAB + blocking-read design is
   validated end-to-end on real threads.
-- **NEW blocker (1b-iii.b):** after the handshake the watchdog dies with
-  `IO error while processing events for <uri>: unsupported operation
-  (error code: 52)` — a DIFFERENT ENOSYS in the watchdog's event loop (fork is
-  already bypassed). Next: find which uv op (signal/kill/watcher/poll) ENOSYS's
-  post-initialize and shim/stub it, then swap fake-worker for a real
-  `lean --worker` wasm instance.
+- **NEW blocker (1b-iii.b) — DIAGNOSED from source:** after the handshake the
+  watchdog dies `IO error while processing events ... error code 52`. Exact chain:
+  `forwardMessages.loop` (Watchdog.lean:790) reads the worker stdout via
+  `fw.stdout.readLspMessageAsString`; our device returns **0 on its 2.5s timeout**
+  → readLspMessageAsString treats 0 as EOF and throws → the `catch` (791) calls
+  **`fw.waitForProc`** (792 = `waitpid` on the fake pid) → **ENOSYS (52)**, uncaught
+  → `WorkerEvent.ioError` → `mainLoop:1576` throws. Two coupled problems:
+
+  **(A) THE CRUX — worker-stdout read can't be async-multiplexed.** The read
+  can't return 0/EOF (false death) but ALSO can't block: it runs on a Lean task
+  **pthread**, whose FS syscall is **proxied to the MAIN thread** → our device
+  `stream_ops.read` on main. A blocking `Atomics.wait` there FREEZES main — and
+  forwarding the client's next request to the worker also needs main (the
+  proxied device WRITE), so it deadlocks. Client stdin (fd 0) avoids this: it
+  goes through the JSPI-suspendable `fd_read` import on the calling thread, not a
+  proxied device. FIX DIRECTION: route the worker pipe fds through the same
+  JSPI `fd_read`/`fd_write` import path (async-suspend on the SAB) instead of a
+  proxied FS char device — so neither read blocks main. This is the real
+  remaining research: making an fdopen-able fd whose reads hit the JSPI import,
+  not proxied `stream_ops`.
+
+  **(B) child wait/kill must be shimmed.** Even with (A) fixed, on crash/shutdown
+  the watchdog calls `fw.waitForProc`/`fw.proc.kill` (`waitpid`/`kill` on the fake
+  pid) → ENOSYS. Needs another `process.cpp` patch (under `__EMSCRIPTEN__`) so
+  `lean_io_process_child_wait`/`_kill` delegate to JS worker-lifecycle (one more
+  rebuild). Then swap fake-worker for a real `lean --worker` wasm instance.
 
 ### 1b-iii EXECUTION MODEL (2026-06-18, probe `spike-probe-fds.cjs`) — de-risks the crux
 Replaced the stub fds with a custom emscripten **FS char device** (`FS.registerDevice`
