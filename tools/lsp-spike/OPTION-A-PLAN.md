@@ -116,16 +116,38 @@ Watchdog error: Cannot read LSP message: Stream was closed   ← EXPECTED (empty
 
 **The C++ side of Option A is DONE.** Everything remaining is rebuild-free JS.
 
-### TWO OPERATIONAL GOTCHAS (cost real debugging — do not relearn)
-1. **Node flag.** This glue needs the NEW JSPI API (`WebAssembly.Suspending`):
-   run `node --experimental-wasm-jspi --max-old-space-size=10240` (Node 24).
-   Without it: "WebAssembly.Suspending is not a constructor". (`stack-switching`
-   alone also boots but is the older flag.) pthread Workers inherit `process.execArgv`,
-   so the flag propagates to the pool automatically.
+### THREE OPERATIONAL GOTCHAS (cost real debugging — do not relearn)
+1. **Node version + flag (EXACT).** The glue needs `WebAssembly.Suspending`,
+   which exists only on **Node 24**. The PATH `node` has drifted to v17.4.0
+   (no JSPI at all → "Suspending is not a constructor"). Use the explicit
+   path and the `stack-switching` flag:
+   `~/.nvm/versions/node/v24.14.1/bin/node --experimental-wasm-stack-switching`.
+   NOTE: `--experimental-wasm-jspi` is a "bad option" on this Node — the
+   earlier note was wrong. pthread Workers inherit `process.execArgv`, so the
+   flag propagates to the pool automatically.
 2. **No idle gap after `initialize`.** The watchdog exits (ExitStatus 1) if left
    idle after responding to `initialize`. Send `initialize` → `initialized` →
    `didOpen` BACK-TO-BACK with no `await`/delay between them, or it dies before the
    worker spawn. (A 1500ms gap reproduced the spontaneous "onExit status=undefined".)
+3. **Reaching spawn is FLAKY.** Even back-to-back, some runs hit a spontaneous
+   `onExit status=undefined` BEFORE `__leanSpawnWorker` fires; re-running
+   succeeds. Needs hardening (deliver frames the instant the first stdin
+   `fd_read` suspends, rather than after a fixed 500ms). Track as its own bug.
+
+### MILESTONE 1b-iii.a RESULT (proven): bidirectional SAB pipe works
+`spike-probe-fds.cjs` + `fake-worker.cjs` (a pure-JS `--worker` stand-in in a
+worker_thread), on Node 24. On a successful (non-flaky) run:
+- watchdog `dev.write`→inFd (157+231 B) → SAB → fake worker `recv initialize`
+  + `recv didOpen`; fake worker `sent` reply → SAB → watchdog `dev.read`
+  outFd **got 75 B** (the initialize response). VERDICT: inFd YES, outFd YES,
+  `Atomics.wait` blockable YES. The FS-device + SAB + blocking-read design is
+  validated end-to-end on real threads.
+- **NEW blocker (1b-iii.b):** after the handshake the watchdog dies with
+  `IO error while processing events for <uri>: unsupported operation
+  (error code: 52)` — a DIFFERENT ENOSYS in the watchdog's event loop (fork is
+  already bypassed). Next: find which uv op (signal/kill/watcher/poll) ENOSYS's
+  post-initialize and shim/stub it, then swap fake-worker for a real
+  `lean --worker` wasm instance.
 
 ### 1b-iii EXECUTION MODEL (2026-06-18, probe `spike-probe-fds.cjs`) — de-risks the crux
 Replaced the stub fds with a custom emscripten **FS char device** (`FS.registerDevice`
