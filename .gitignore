@@ -105,3 +105,12 @@ cdn/projects/mathlib-v4.27.0-2026-04/oleans.bundle.[0-9]*
 # tiny core-modules.json stay tracked as the source-of-truth records.
 cdn/projects/mathlib-v4.27.0-2026-04/core.bundle
 cdn/projects/mathlib-v4.27.0-2026-04/core.bundle.[0-9]*
+
+# ---- nanoda-wasm-spike: large generated artifacts ----
+# The full li-criterion proof export is ~458 MB (8.9M NDJSON records) — past
+# GitHub's 100 MB/file limit. Regenerate with lean4export (see the spike README).
+# nanoda_bin.wasm (819 KB) and toy.ndjson (18 KB) ARE tracked: the deliverable
+# plus a smoke-test fixture. Build logs are ignored.
+tools/nanoda-wasm-spike/li-criterion.ndjson
+tools/nanoda-wasm-spike/*.log
+tools/nanoda-wasm-spike/export.err

@@ -1,0 +1,9 @@
+{
+  "use_stdin": true,
+  "permitted_axioms": ["propext", "Quot.sound", "Classical.choice"],
+  "unpermitted_axiom_hard_error": true,
+  "print_success_message": true,
+  "num_threads": 0,
+  "nat_extension": true,
+  "string_extension": true
+}
